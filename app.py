@@ -5,6 +5,7 @@ import pandas_ta as ta
 import plotly.graph_objects as go
 import requests
 import os
+import time
 from abc import ABC, abstractmethod
 
 # ==========================================
