@@ -1,6 +1,6 @@
 streamlit
-yfinance
 pandas
 pandas-ta
 plotly
 requests
+git+https://github.com/rongardF/tvdatafeed.git
