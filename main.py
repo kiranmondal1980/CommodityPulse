@@ -5,8 +5,8 @@ import requests
 import os
 
 # Get credentials from GitHub Secrets
-TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
+TOKEN = os.environ.get('TELEGRAM_TOKEN')
+CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
 ASSETS = {
     'CL=F': {'name': 'Crude Oil', 'emoji': '🛢️'},
@@ -31,8 +31,6 @@ def apply_indicators(df):
     df.ta.atr(length=14, append=True)
     return df
 
-print(f"Data received for {ticker}: {df.iloc[-1]['Close']}")
-
 def check_signals(df):
     if len(df) < 2: return None
     curr, prev = df.iloc[-1], df.iloc[-2]
@@ -55,16 +53,21 @@ def check_signals(df):
 def send_telegram_alert(ticker, info, sig):
     sl = (sig['price'] - 1.5 * sig['atr']) if sig['signal'] == "BULLISH" else (sig['price'] + 1.5 * sig['atr'])
     msg = f"{info['emoji']} **{info['name']} ({ticker})**: {sig['signal']}\n💰 Price: ${sig['price']:.2f}\n🔥 RSI: {sig['rsi']:.1f}\n📐 SL: ${sl:.2f}"
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", 
-                  json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
+    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                  json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
 
 def main():
     for ticker, info in ASSETS.items():
         df = fetch_data(ticker)
         if df is not None:
+            # Now we are inside the loop, so 'ticker' is defined!
+            print(f"✅ Data received for {ticker}: {df.iloc[-1]['Close']:.2f}")
             sig = check_signals(apply_indicators(df))
             if sig:
                 send_telegram_alert(ticker, info, sig)
+                print(f"🚨 Signal Alert Sent for {ticker}!")
+            else:
+                print(f"ℹ️ No signal for {ticker}")
 
 if __name__ == "__main__":
     main()
