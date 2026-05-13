@@ -30,10 +30,10 @@ ASSETS = {
         'Silver': {'ticker': 'SI=F', 'emoji': '⚪'}
     },
     "Indian MCX": {
-        'Crude Oil (MCX)': {'ticker': 'CRUDEOIL', 'emoji': '🛢️'},
-        'Natural Gas (MCX)': {'ticker': 'NATURALGAS', 'emoji': '🔥'},
-        'Gold (MCX)': {'ticker': 'GOLD', 'emoji': '🟡'},
-        'Silver (MCX)': {'ticker': 'SILVER', 'emoji': '⚪'}
+        'Crude Oil (MCX)': {'ticker': 'CRUDEOIL1!', 'emoji': '🛢️'},
+        'Natural Gas (MCX)': {'ticker': 'NATURALGAS1!', 'emoji': '🔥'},
+        'Gold (MCX)': {'ticker': 'GOLD1!', 'emoji': '🟡'},
+        'Silver (MCX)': {'ticker': 'SILVER1!', 'emoji': '⚪'}
     }
 }
 
@@ -168,7 +168,7 @@ from tvDatafeed import TvDatafeed, Interval
 # Initialize the feed globally
 tv = TvDatafeed()
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=600)
 def fetch_data(ticker, region, timeframe):
     # Mapping for TradingView intervals
     interval_map = {
@@ -178,20 +178,20 @@ def fetch_data(ticker, region, timeframe):
         "1d": Interval.in_daily
     }
     
-    # 1. Logic for MCX (TradingView)
     if region == "Indian MCX":
+        # TradingView needs the symbol (e.g., 'CRUDEOIL')
+        # Note: If it fails, try adding '1!' to the ticker (e.g., 'CRUDEOIL1!')
         try:
-            df = tv.get_hist(symbol=ticker, exchange='MCX', interval=interval_map[timeframe], n_bars=500)
+            df = tv.get_hist(symbol=ticker, exchange='MCX', interval=interval_map[timeframe], n_bars=300)
             if df is not None and not df.empty:
-                # Rename columns to match what your strategy functions expect
-                df.columns = [c.capitalize() for c in df.columns] 
+                df.columns = [c.capitalize() for c in df.columns]
                 return df
         except Exception as e:
             st.error(f"TradingView Error: {e}")
             return None
             
-    # 2. Logic for Global (yfinance)
     else:
+        # Global Logic (yfinance)
         try:
             df = yf.download(ticker, period="6mo", interval=timeframe, progress=False)
             if isinstance(df.columns, pd.MultiIndex): 
@@ -243,12 +243,13 @@ def main():
     tf_params = TIMEFRAMES[timeframe]
     strategy = STRATEGIES[strategy_name]
 
-    # Fetch Data
+    # Fetch Data - Now passing the region correctly
     with st.spinner(f"Fetching {asset_name} data..."):
-        df = fetch_data(ticker, tf_params['period'], tf_params['interval'])
+        df = fetch_data(ticker, region, timeframe)
 
+    # Validate data before proceeding
     if df is None or len(df) < 50:
-        st.error(f"⚠️ Insufficient or No Data for {asset_name} ({ticker}). This may be due to market hours or yfinance limits on MCX.")
+        st.error(f"⚠️ No data returned for {asset_name}. If using MCX, check ticker in ASSETS dictionary.")
         st.stop()
 
     # Apply Quant Strategy
