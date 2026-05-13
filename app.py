@@ -165,25 +165,41 @@ STRATEGIES = {
 # ==========================================
 from tvDatafeed import TvDatafeed, Interval
 
-# Initialize the feed globally so it doesn't reconnect every time
+# Initialize the feed globally
 tv = TvDatafeed()
 
 @st.cache_data(ttl=300)
 def fetch_data(ticker, region, timeframe):
-    # Map Streamlit timeframe to TvDatafeed intervals
-    interval_map = {"15m": Interval.in_15_minute, "1h": Interval.in_1_hour, 
-                    "4h": Interval.in_4_hour, "1d": Interval.in_daily}
+    # Mapping for TradingView intervals
+    interval_map = {
+        "15m": Interval.in_15_minute, 
+        "1h": Interval.in_1_hour, 
+        "4h": Interval.in_4_hour, 
+        "1d": Interval.in_daily
+    }
     
-    if region == "Global":
-        # Keep using your original yfinance logic for Global
-        df = yf.download(ticker, period="6mo", interval=timeframe, progress=False)
-        return df
+    # 1. Logic for MCX (TradingView)
+    if region == "Indian MCX":
+        try:
+            df = tv.get_hist(symbol=ticker, exchange='MCX', interval=interval_map[timeframe], n_bars=500)
+            if df is not None and not df.empty:
+                # Rename columns to match what your strategy functions expect
+                df.columns = [c.capitalize() for c in df.columns] 
+                return df
+        except Exception as e:
+            st.error(f"TradingView Error: {e}")
+            return None
+            
+    # 2. Logic for Global (yfinance)
     else:
-        # Use TradingView for MCX
-        df = tv.get_hist(symbol=ticker, exchange='MCX', interval=interval_map[timeframe], n_bars=500)
-        if df is not None and not df.empty:
-            df.columns = [c.capitalize() for c in df.columns] # Ensure Column names match (Open, High, Low, Close)
+        try:
+            df = yf.download(ticker, period="6mo", interval=timeframe, progress=False)
+            if isinstance(df.columns, pd.MultiIndex): 
+                df.columns = df.columns.get_level_values(0)
             return df
+        except Exception as e:
+            st.error(f"yfinance Error: {e}")
+            return None
     return None
 
 def send_telegram_alert(message):
