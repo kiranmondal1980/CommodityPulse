@@ -10,9 +10,14 @@ jobs:
       - uses: actions/checkout@v2
       - name: Set up Python
         uses: actions/setup-python@v2
-        with: {python-version: '3.9'}
-      - run: pip install yfinance pandas pandas-ta requests
-      - run: python main.py
+        with: 
+          python-version: '3.12'  # <--- CHANGED FROM 3.9 TO 3.12
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas pandas-ta requests
+      - name: Run Bot
+        run: python main.py
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
