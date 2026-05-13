@@ -31,6 +31,8 @@ def apply_indicators(df):
     df.ta.atr(length=14, append=True)
     return df
 
+print(f"Data received for {ticker}: {df.iloc[-1]['Close']}")
+
 def check_signals(df):
     if len(df) < 2: return None
     curr, prev = df.iloc[-1], df.iloc[-2]
