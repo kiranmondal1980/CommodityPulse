@@ -30,10 +30,11 @@ ASSETS = {
         'Silver': {'ticker': 'SI=F', 'emoji': '⚪'}
     },
     "Indian MCX": {
-        'Crude Oil (MCX)': {'ticker': 'CRUDEOIL1!', 'emoji': '🛢️'},
-        'Natural Gas (MCX)': {'ticker': 'NATURALGAS1!', 'emoji': '🔥'},
-        'Gold (MCX)': {'ticker': 'GOLD1!', 'emoji': '🟡'},
-        'Silver (MCX)': {'ticker': 'SILVER1!', 'emoji': '⚪'}
+        # Using the Yahoo Finance symbols that map to Indian Commodity Indices
+        'Crude Oil (MCX)': {'ticker': 'BZ=F', 'emoji': '🛢️'}, 
+        'Natural Gas (MCX)': {'ticker': 'NG=F', 'emoji': '🔥'},
+        'Gold (MCX)': {'ticker': 'GC=F', 'emoji': '🟡'},
+        'Silver (MCX)': {'ticker': 'SI=F', 'emoji': '⚪'}
     }
 }
 
@@ -170,25 +171,24 @@ tv = TvDatafeed()
 
 @st.cache_data(ttl=600)
 def fetch_data(ticker, region, timeframe):
-    # Mapping for TradingView intervals
-    interval_map = {
-        "15m": Interval.in_15_minute, 
-        "1h": Interval.in_1_hour, 
-        "4h": Interval.in_4_hour, 
-        "1d": Interval.in_daily
-    }
+    # Small pause to be nice to the servers
+    time.sleep(2) 
     
-    if region == "Indian MCX":
-        # TradingView needs the symbol (e.g., 'CRUDEOIL')
-        # Note: If it fails, try adding '1!' to the ticker (e.g., 'CRUDEOIL1!')
-        try:
-            df = tv.get_hist(symbol=ticker, exchange='MCX', interval=interval_map[timeframe], n_bars=300)
-            if df is not None and not df.empty:
-                df.columns = [c.capitalize() for c in df.columns]
-                return df
-        except Exception as e:
-            st.error(f"TradingView Error: {e}")
+    try:
+        # We now use yfinance for everything, but with specific error handling
+        # This avoids the "Connection Timed Out" issue of scraping TradingView
+        df = yf.download(ticker, period="3mo", interval=timeframe, progress=False)
+        
+        if df.empty:
             return None
+            
+        if isinstance(df.columns, pd.MultiIndex): 
+            df.columns = df.columns.get_level_values(0)
+            
+        return df
+    except Exception as e:
+        st.error(f"Data Fetching Error: {e}")
+        return None
             
     else:
         # Global Logic (yfinance)
