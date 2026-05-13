@@ -204,17 +204,23 @@ def fetch_data(ticker, region, timeframe):
     return None
 
 def send_telegram_alert(message):
+    # Try getting from environment (GitHub) or secrets (Streamlit Cloud)
     token = os.environ.get('TELEGRAM_TOKEN') or st.secrets.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get('TELEGRAM_CHAT_ID') or st.secrets.get("TELEGRAM_CHAT_ID")
+    
     if not token or not chat_id:
-        st.warning("⚠️ Telegram credentials not found in environment or secrets.")
+        st.error("Telegram credentials missing in Secrets!")
         return
+
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+    
     try:
-        requests.post(url, json=payload)
+        response = requests.post(url, json=payload)
+        if response.status_code != 200:
+            st.error(f"Telegram API Error: {response.text}")
     except Exception as e:
-        st.error(f"Failed to send Telegram alert: {e}")
+        st.error(f"Connection error: {e}")
 
 # ==========================================
 # MAIN UI / FRONTEND
@@ -232,6 +238,12 @@ def main():
         
         st.markdown("---")
         enable_alerts = st.toggle("🔔 Enable Live Telegram Alerts", value=False)
+    
+    # NEW: Test Alert Button
+    if st.button("🚀 Send Test Alert"):
+        test_msg = "✅ CommodityPulse Pro: System test successful! Alerts are active."
+        send_telegram_alert(test_msg)
+        st.success("Test alert sent to your Telegram!")
         
         # State Management: Prevent duplicate alerts on Streamlit reruns
         if "last_alert_time" not in st.session_state:
