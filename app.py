@@ -107,7 +107,6 @@ def get_usdinr_rate():
     except:
         return 83.50 # Fallback live rate if fetch fails
 
-@st.cache_data(ttl=600)
 def@st.cache_data(ttl=600)
 def fetch_data(ticker, region, timeframe):
     time.sleep(1) 
