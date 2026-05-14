@@ -3,6 +3,7 @@ import pandas as pd
 import pandas_ta as ta
 import requests
 import os
+import time  # <-- Added time module
 
 # Get credentials from GitHub Secrets
 TOKEN = os.environ.get('TELEGRAM_TOKEN')
@@ -16,8 +17,10 @@ ASSETS = {
 }
 
 def fetch_data(ticker):
+    # <-- Added sleep to prevent Rate Limiting by Yahoo
+    time.sleep(2) 
     try:
-        df = yf.download(ticker, period="5d", interval="15m", progress=False)
+        df = yf.download(ticker, period="60d", interval="15m", progress=False) # Changed from 5d to 60d for better indicator accuracy
         if df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         return df
@@ -29,6 +32,7 @@ def apply_indicators(df):
     df.ta.ema(length=200, append=True)
     df.ta.rsi(length=14, append=True)
     df.ta.atr(length=14, append=True)
+    df.dropna(inplace=True) # <-- Added dropna to clean data
     return df
 
 def check_signals(df):
@@ -57,10 +61,13 @@ def send_telegram_alert(ticker, info, sig):
                   json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
 
 def main():
+    if not TOKEN or not CHAT_ID:
+        print("Missing Telegram Keys!")
+        return
+        
     for ticker, info in ASSETS.items():
         df = fetch_data(ticker)
         if df is not None:
-            # Now we are inside the loop, so 'ticker' is defined!
             print(f"✅ Data received for {ticker}: {df.iloc[-1]['Close']:.2f}")
             sig = check_signals(apply_indicators(df))
             if sig:
