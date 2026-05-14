@@ -42,17 +42,17 @@ st.markdown("""
 # CONSTANTS & ASSET MAPPINGS
 # ==========================================
 ASSETS = {
-    "Global Proxy (in INR)": {
-        'Crude Oil (WTI)': {'ticker': 'CL=F', 'emoji': '🛢️'},
-        'Natural Gas': {'ticker': 'NG=F', 'emoji': '🔥'},
-        'Gold': {'ticker': 'GC=F', 'emoji': '🟡'},
-        'Silver': {'ticker': 'SI=F', 'emoji': '⚪'}
-    },
-    "Indian MCX (in INR)": {
+    "Indian MCX (Estimated)": {
+        # Using XAU/INR and XAG/INR proxies is much more accurate for Indian Spot prices
+        'Gold (MCX)': {'ticker': 'XAUUSD=X', 'emoji': '🟡'},
+        'Silver (MCX)': {'ticker': 'XAGUSD=X', 'emoji': '⚪'},
         'Crude Oil (MCX)': {'ticker': 'BZ=F', 'emoji': '🛢️'}, 
-        'Natural Gas (MCX)': {'ticker': 'NG=F', 'emoji': '🔥'},
-        'Gold (MCX)': {'ticker': 'GC=F', 'emoji': '🟡'},
-        'Silver (MCX)': {'ticker': 'SI=F', 'emoji': '⚪'}
+        'Natural Gas (MCX)': {'ticker': 'NG=F', 'emoji': '🔥'}
+    },
+    "Global Markets": {
+        'Crude Oil (WTI)': {'ticker': 'CL=F', 'emoji': '🛢️'},
+        'Gold (COMEX)': {'ticker': 'GC=F', 'emoji': '🟡'},
+        'Silver (COMEX)': {'ticker': 'SI=F', 'emoji': '⚪'}
     }
 }
 
@@ -108,12 +108,11 @@ def get_usdinr_rate():
         return 83.50 # Fallback live rate if fetch fails
 
 @st.cache_data(ttl=600)
+def@st.cache_data(ttl=600)
 def fetch_data(ticker, region, timeframe):
     time.sleep(1) 
-    
-    if timeframe == "15m": fetch_period = "60d"
-    elif timeframe == "1h": fetch_period = "730d"
-    else: fetch_period = "2y"
+    # Logic for 15m data limits
+    fetch_period = "60d" if timeframe == "15m" else "2y"
         
     try:
         df = yf.download(ticker, period=fetch_period, interval=timeframe, progress=False)
@@ -122,23 +121,27 @@ def fetch_data(ticker, region, timeframe):
             df.columns = df.columns.get_level_values(0)
         df.dropna(inplace=True)
 
-        # 1. TIMEZONE CONVERSION (Convert to IST)
+        # Convert Timezone to IST
         if df.index.tz is None:
             df.index = df.index.tz_localize('UTC').tz_convert('Asia/Kolkata')
         else:
             df.index = df.index.tz_convert('Asia/Kolkata')
 
-        # 2. CURRENCY & UNIT CONVERSION (Convert USD to INR with MCX Weights)
+        # --- PROFESSIONAL MCX CALIBRATION ---
         usdinr_rate = get_usdinr_rate()
+        import_duty = 1.15 # 15% Indian Import Duty & Taxes
         
-        if ticker == 'GC=F': # Global Gold is per Troy Oz. MCX is per 10 grams.
-            multiplier = usdinr_rate * (10 / 31.1034768)
-        elif ticker == 'SI=F': # Global Silver is per Troy Oz. MCX is per 1 Kg.
-            multiplier = usdinr_rate * (1000 / 31.1034768)
-        else: # Crude Oil & Nat Gas (1 Barrel / 1 mmBtu matches MCX)
+        if ticker == 'XAUUSD=X' or ticker == 'GC=F': 
+            # 1 Troy Oz = 31.1035 grams. Indian MCX is 10 grams.
+            multiplier = (usdinr_rate / 31.1034768) * 10 * import_duty
+        elif ticker == 'XAGUSD=X' or ticker == 'SI=F':
+            # 1 Troy Oz = 31.1035 grams. Indian MCX is 1 Kg (1000g).
+            multiplier = (usdinr_rate / 31.1034768) * 1000 * import_duty
+        else:
+            # Crude and Gas are 1:1 with USD rate conversion
             multiplier = usdinr_rate
 
-        # Scale all price columns to true INR value
+        # Apply the calibrated multiplier
         for col in ['Open', 'High', 'Low', 'Close']:
             df[col] = df[col] * multiplier
 
