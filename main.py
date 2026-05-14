@@ -36,8 +36,13 @@ def apply_indicators(df):
     return df
 
 def check_signals(df):
-    if len(df) < 2: return None
-    curr, prev = df.iloc[-1], df.iloc[-2]
+    if len(df) < 3: return None
+    
+    # THE PRO FIX: We look at index [-2] (Last Closed Candle) and [-3] (The one before it)
+    # This prevents missed alerts if GitHub Actions runs a few minutes late!
+    curr = df.iloc[-2]  
+    prev = df.iloc[-3]  
+    
     try:
         c_close = float(curr['Close'])
         c_ema9, c_ema21, c_ema200 = float(curr['EMA_9']), float(curr['EMA_21']), float(curr['EMA_200'])
@@ -47,6 +52,8 @@ def check_signals(df):
     except: return None
     
     if pd.isna(c_ema200): return None
+    
+    # Mathematical Conditions
     bull = (c_ema9 > c_ema21) and (p_ema9 <= p_ema21) and (c_close > c_ema200) and (c_rsi > 55)
     bear = (c_ema9 < c_ema21) and (p_ema9 >= p_ema21) and (c_close < c_ema200) and (c_rsi < 45)
     
