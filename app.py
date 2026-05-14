@@ -18,27 +18,27 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for a "Premium Terminal" Look
+# Custom CSS for a "Premium Light Mode" Look
 st.markdown("""
     <style>
-    /* Metric Cards Styling */
+    /* Light Mode Metric Cards */
     div[data-testid="metric-container"] {
-        background-color: #11141a;
-        border: 1px solid #2b2b36;
+        background-color: #ffffff;
+        border: 1px solid #e6e6e6;
         padding: 5% 5% 5% 10%;
         border-radius: 10px;
-        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
         transition: transform 0.2s ease-in-out;
     }
     div[data-testid="metric-container"]:hover {
         transform: translateY(-2px);
-        border: 1px solid #4a4a5a;
+        border: 1px solid #c0c0c0;
     }
-    /* Headers */
+    /* Headers for Light Mode */
     h1, h2, h3 {
         font-family: 'Helvetica Neue', sans-serif;
         font-weight: 600;
-        color: #e0e0e0;
+        color: #31333F;
     }
     /* Hide Streamlit Branding */
     #MainMenu {visibility: hidden;}
@@ -101,10 +101,10 @@ class TrendConfluence(BaseStrategy):
         df.loc[bearish, 'Signal'] = -1
         return df
     def add_chart_overlays(self, fig, df):
-        # Neon colored EMAs for premium look
-        if 'EMA_9' in df: fig.add_trace(go.Scatter(x=df.index, y=df['EMA_9'], name='EMA 9', line=dict(color='#00d2ff', width=1.5)))
-        if 'EMA_21' in df: fig.add_trace(go.Scatter(x=df.index, y=df['EMA_21'], name='EMA 21', line=dict(color='#ff9900', width=1.5)))
-        if 'EMA_200' in df: fig.add_trace(go.Scatter(x=df.index, y=df['EMA_200'], name='EMA 200', line=dict(color='#ffffff', width=2.5)))
+        # Adjusted colors for white background
+        if 'EMA_9' in df: fig.add_trace(go.Scatter(x=df.index, y=df['EMA_9'], name='EMA 9', line=dict(color='#2196F3', width=1.5))) # Solid Blue
+        if 'EMA_21' in df: fig.add_trace(go.Scatter(x=df.index, y=df['EMA_21'], name='EMA 21', line=dict(color='#FF9800', width=1.5))) # Solid Orange
+        if 'EMA_200' in df: fig.add_trace(go.Scatter(x=df.index, y=df['EMA_200'], name='EMA 200', line=dict(color='#2C3E50', width=2.5))) # Dark Navy/Black
 
 class MeanReversion(BaseStrategy):
     def __init__(self): self.name = "Mean Reversion (BB Fade)"
@@ -123,8 +123,8 @@ class MeanReversion(BaseStrategy):
         return df
     def add_chart_overlays(self, fig, df):
         if 'BBU_20_2.0' in df: 
-            fig.add_trace(go.Scatter(x=df.index, y=df['BBU_20_2.0'], name='Upper BB', line=dict(color='#888888', dash='dot', width=1.5)))
-            fig.add_trace(go.Scatter(x=df.index, y=df['BBL_20_2.0'], name='Lower BB', line=dict(color='#888888', dash='dot', width=1.5)))
+            fig.add_trace(go.Scatter(x=df.index, y=df['BBU_20_2.0'], name='Upper BB', line=dict(color='#9E9E9E', dash='dot', width=1.5)))
+            fig.add_trace(go.Scatter(x=df.index, y=df['BBL_20_2.0'], name='Lower BB', line=dict(color='#9E9E9E', dash='dot', width=1.5)))
 
 class VolatilityBreakout(BaseStrategy):
     def __init__(self): self.name = "Volatility Breakout (Donchian)"
@@ -143,8 +143,8 @@ class VolatilityBreakout(BaseStrategy):
         return df
     def add_chart_overlays(self, fig, df):
         if 'DCU_20_20' in df:
-            fig.add_trace(go.Scatter(x=df.index, y=df['DCU_20_20'], name='Donchian Upper', line=dict(color='#00ff88', dash='dash')))
-            fig.add_trace(go.Scatter(x=df.index, y=df['DCL_20_20'], name='Donchian Lower', line=dict(color='#ff0055', dash='dash')))
+            fig.add_trace(go.Scatter(x=df.index, y=df['DCU_20_20'], name='Donchian Upper', line=dict(color='#00C853', dash='dash')))
+            fig.add_trace(go.Scatter(x=df.index, y=df['DCL_20_20'], name='Donchian Lower', line=dict(color='#D50000', dash='dash')))
 
 STRATEGIES = {
     "Trend Confluence": TrendConfluence(),
@@ -159,7 +159,6 @@ STRATEGIES = {
 def fetch_data(ticker, region, timeframe):
     time.sleep(1) # Prevent rate limiting
     
-    # CRITICAL FIX: yfinance only allows 60 days of data for 15m intervals
     if timeframe == "15m": fetch_period = "60d"
     elif timeframe == "1h": fetch_period = "730d"
     else: fetch_period = "2y"
@@ -193,8 +192,8 @@ def send_telegram_alert(message):
 # ==========================================
 def main():
     # Header Title
-    st.markdown("<h1>⚡ CommodityPulse <span style='color:#00d2ff'>Pro</span></h1>", unsafe_allow_html=True)
-    st.markdown("<p style='color:#888; font-size:14px;'>Advanced Multi-Strategy Quant Terminal</p>", unsafe_allow_html=True)
+    st.markdown("<h1>⚡ CommodityPulse <span style='color:#2196F3'>Pro</span></h1>", unsafe_allow_html=True)
+    st.markdown("<p style='color:#666666; font-size:14px;'>Advanced Multi-Strategy Quant Terminal</p>", unsafe_allow_html=True)
     
     # --- SIDEBAR ---
     with st.sidebar:
@@ -271,47 +270,46 @@ def main():
         st.toast(f"Telegram Alert Sent for {asset_name}!", icon="🚀")
 
     # --- MIDDLE ROW: INTERACTIVE PLOTLY CHART ---
-    st.markdown("<hr style='border:1px solid #2b2b36'>", unsafe_allow_html=True)
+    st.markdown("<hr style='border:1px solid #e6e6e6'>", unsafe_allow_html=True)
     st.markdown(f"### 📊 Advanced Charting: {strategy.name}")
     
     fig = go.Figure()
     
-    # 1. Candlestick Trace (Cleaner colors)
+    # 1. Candlestick Trace (Classic Green/Red for Light Mode)
     fig.add_trace(go.Candlestick(
         x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
         name='Price',
-        increasing_line_color='#00ff88', decreasing_line_color='#ff0055'
+        increasing_line_color='#089981', decreasing_line_color='#F23645'
     ))
     
     # 2. Add Strategy Overlays
     strategy.add_chart_overlays(fig, df)
 
-    # 3. Add Signal Markers (Larger & clearer)
+    # 3. Add Signal Markers
     bulls, bears = df[df['Signal'] == 1], df[df['Signal'] == -1]
-    fig.add_trace(go.Scatter(x=bulls.index, y=bulls['Low'] - current_atr, mode='markers', marker=dict(symbol='triangle-up', color='#00ff88', size=14, line=dict(width=1, color='black')), name='Buy Signal'))
-    fig.add_trace(go.Scatter(x=bears.index, y=bears['High'] + current_atr, mode='markers', marker=dict(symbol='triangle-down', color='#ff0055', size=14, line=dict(width=1, color='black')), name='Sell Signal'))
+    fig.add_trace(go.Scatter(x=bulls.index, y=bulls['Low'] - current_atr, mode='markers', marker=dict(symbol='triangle-up', color='#089981', size=14, line=dict(width=1, color='black')), name='Buy Signal'))
+    fig.add_trace(go.Scatter(x=bears.index, y=bears['High'] + current_atr, mode='markers', marker=dict(symbol='triangle-down', color='#F23645', size=14, line=dict(width=1, color='black')), name='Sell Signal'))
 
-    # Premium Chart Formatting
+    # Light Mode Chart Formatting
     fig.update_layout(
-        template="plotly_dark",
-        plot_bgcolor="#0E1117",
-        paper_bgcolor="#0E1117",
+        template="plotly_white",  # Switched to light template
+        plot_bgcolor="#ffffff",
+        paper_bgcolor="#ffffff",
         xaxis_rangeslider_visible=False,
         height=650,
         margin=dict(l=20, r=20, t=30, b=20),
-        xaxis=dict(showgrid=True, gridcolor='#2b2b36', gridwidth=1),
-        yaxis=dict(showgrid=True, gridcolor='#2b2b36', gridwidth=1),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)")
+        xaxis=dict(showgrid=True, gridcolor='#f0f2f6', gridwidth=1), # Light gray grid
+        yaxis=dict(showgrid=True, gridcolor='#f0f2f6', gridwidth=1),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(255,255,255,0.8)")
     )
     st.plotly_chart(fig, use_container_width=True)
 
     # --- BOTTOM ROW: LIVE SIGNAL LOG ---
-    st.markdown("<hr style='border:1px solid #2b2b36'>", unsafe_allow_html=True)
+    st.markdown("<hr style='border:1px solid #e6e6e6'>", unsafe_allow_html=True)
     st.markdown("### 📝 Historical Ledger")
     
     signal_history = df[df['Signal'] != 0].copy()
     if not signal_history.empty:
-        # Style the dataframe for a modern look
         signal_history['Action'] = signal_history['Signal'].map({1: '🟢 BUY', -1: '🔴 SELL'})
         display_cols = ['Action', 'Close']
         if 'RSI_14' in signal_history.columns: display_cols.append('RSI_14')
@@ -320,7 +318,6 @@ def main():
         log_df = signal_history[display_cols].iloc[::-1].head(10)
         log_df.index.name = 'Timestamp'
         
-        # Streamlit Native Data Editor for better aesthetics
         st.dataframe(
             log_df, 
             use_container_width=True,
