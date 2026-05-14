@@ -18,7 +18,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for a "Premium Light Mode" Look
 st.markdown("""
     <style>
     div[data-testid="metric-container"] {
@@ -27,11 +26,6 @@ st.markdown("""
         padding: 5% 5% 5% 10%;
         border-radius: 10px;
         box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
-        transition: transform 0.2s ease-in-out;
-    }
-    div[data-testid="metric-container"]:hover {
-        transform: translateY(-2px);
-        border: 1px solid #c0c0c0;
     }
     h1, h2, h3 {font-family: 'Helvetica Neue', sans-serif; font-weight: 600; color: #31333F;}
     #MainMenu {visibility: hidden;} footer {visibility: hidden;}
@@ -41,9 +35,8 @@ st.markdown("""
 # ==========================================
 # CONSTANTS & ASSET MAPPINGS
 # ==========================================
-# We use Spot prices (XAUUSD=X) for MCX Estimation because they are much more stable
 ASSETS = {
-    "Indian MCX (Estimated in INR)": {
+    "Indian MCX (Estimated)": {
         'Gold (MCX)': {'ticker': 'XAUUSD=X', 'emoji': '🟡'},
         'Silver (MCX)': {'ticker': 'XAGUSD=X', 'emoji': '⚪'},
         'Crude Oil (MCX)': {'ticker': 'BZ=F', 'emoji': '🛢️'}, 
@@ -84,7 +77,7 @@ class TrendConfluence(BaseStrategy):
         return df
     def generate_signals(self, df):
         df['Signal'] = 0
-        if len(df) < 2: return df
+        if len(df) < 5: return df
         bullish = (df['EMA_9'] > df['EMA_21']) & (df['EMA_9'].shift(1) <= df['EMA_21'].shift(1)) & (df['Close'] > df['EMA_200']) & (df['RSI_14'] > 55)
         bearish = (df['EMA_9'] < df['EMA_21']) & (df['EMA_9'].shift(1) >= df['EMA_21'].shift(1)) & (df['Close'] < df['EMA_200']) & (df['RSI_14'] < 45)
         df.loc[bullish, 'Signal'] = 1; df.loc[bearish, 'Signal'] = -1
@@ -97,56 +90,53 @@ class TrendConfluence(BaseStrategy):
 STRATEGIES = {"Trend Confluence": TrendConfluence()}
 
 # ==========================================
-# DATA, CURRENCY, AND TIMEZONE FUNCTIONS
+# DATA & CALIBRATION FUNCTIONS
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_usdinr_rate():
     try:
-        usdinr = yf.download("INR=X", period="1d", interval="1d", progress=False)
-        return float(usdinr['Close'].iloc[-1])
-    except:
-        return 83.50 
+        data = yf.download("INR=X", period="5d", interval="1d", progress=False)
+        return float(data['Close'].iloc[-1])
+    except: return 83.80
 
-@st.cache_data(ttl=600)
-def fetch_data(ticker, region, timeframe):
-    time.sleep(1) 
-    # yfinance rule: 15m intervals only allow 60 days history
-    fetch_period = "60d" if timeframe == "15m" else "2y"
-        
+@st.cache_data(ttl=300) # Reduced cache time for fresher data
+def fetch_data(ticker, timeframe):
+    # Logic: 15m data is only reliably available for 30 days on Yahoo free tier
+    period = "30d" if timeframe == "15m" else "1y"
+    
     try:
-        df = yf.download(ticker, period=fetch_period, interval=timeframe, progress=False)
-        if df.empty: return None
-        if isinstance(df.columns, pd.MultiIndex): 
+        df = yf.download(ticker, period=period, interval=timeframe, auto_adjust=True, progress=False)
+        
+        if df is None or df.empty: return None
+        
+        # Repairing Yahoo Finance's New Multi-Index Format
+        if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-        df.dropna(inplace=True)
-
-        # 1. Convert to Indian Standard Time (IST)
+            
+        df = df.copy()
+        
+        # Timezone conversion to IST
         if df.index.tz is None:
             df.index = df.index.tz_localize('UTC').tz_convert('Asia/Kolkata')
         else:
             df.index = df.index.tz_convert('Asia/Kolkata')
 
-        # 2. MCX Price Calibration (INR + Import Duty + Weights)
-        usdinr_rate = get_usdinr_rate()
-        import_duty = 1.15 # Approx 15% Indian Customs Duty & Taxes
+        # MCX Price Calibration
+        usdinr = get_usdinr_rate()
+        duty = 1.15 # 15% Import Duty
         
-        # Calibration Logic
         if ticker in ['XAUUSD=X', 'GC=F']: 
-            # Multiplier: (USD Price / 31.1035 oz to grams) * 10 grams * usdinr * duty
-            multiplier = (usdinr_rate / 31.1034768) * 10 * import_duty
+            multiplier = (usdinr / 31.1034) * 10 * duty
         elif ticker in ['XAGUSD=X', 'SI=F']:
-            # Multiplier: (USD Price / 31.1035 oz to grams) * 1000 grams (1kg) * usdinr * duty
-            multiplier = (usdinr_rate / 31.1034768) * 1000 * import_duty
+            multiplier = (usdinr / 31.1034) * 1000 * duty
         else:
-            # Crude Oil and Gas are quoted per unit (Barrel/mmBtu) in INR on MCX
-            multiplier = usdinr_rate
+            multiplier = usdinr
 
         for col in ['Open', 'High', 'Low', 'Close']:
             df[col] = df[col] * multiplier
 
         return df
     except Exception as e:
-        st.error(f"Data Fetching Error: {e}")
         return None
 
 def send_telegram_alert(message):
@@ -157,119 +147,77 @@ def send_telegram_alert(message):
     except: pass
 
 # ==========================================
-# MAIN UI / FRONTEND
+# MAIN TERMINAL
 # ==========================================
 def main():
     st.markdown("<h1>⚡ CommodityPulse <span style='color:#2196F3'>Pro</span></h1>", unsafe_allow_html=True)
-    st.markdown("<p style='color:#666666; font-size:14px;'>Advanced Multi-Strategy Quant Terminal (IST / INR)</p>", unsafe_allow_html=True)
+    st.markdown("<p style='color:#666; font-size:14px;'>Indian Quant Terminal (IST/INR)</p>", unsafe_allow_html=True)
     
     with st.sidebar:
-        st.image("https://img.icons8.com/nolan/96/line-chart.png", width=60)
-        st.markdown("### ⚙️ Terminal Settings")
-        
-        region = st.selectbox("🌐 Market Region", list(ASSETS.keys()))
-        asset_name = st.selectbox("📌 Select Asset", list(ASSETS[region].keys()))
-        timeframe = st.selectbox("⏱️ Timeframe", list(TIMEFRAMES.keys()))
+        st.header("⚙️ Settings")
+        region = st.selectbox("Market", list(ASSETS.keys()))
+        asset = st.selectbox("Asset", list(ASSETS[region].keys()))
+        tf = st.selectbox("Timeframe", list(TIMEFRAMES.keys()))
+        strategy_name = st.selectbox("Strategy", list(STRATEGIES.keys()))
         
         st.divider()
-        strategy_name = st.selectbox("🧠 Select Algorithm", list(STRATEGIES.keys()))
-        st.divider()
-        
-        enable_alerts = st.toggle("🔔 Enable Live Telegram Alerts", value=False)
-        if st.button("🚀 Send Test Alert", use_container_width=True):
-            send_telegram_alert("✅ CommodityPulse Pro: System test successful! Alerts are active in IST and INR.")
-            st.toast("Test alert sent to your Telegram!", icon="🚀")
-            
+        enable_alerts = st.toggle("Enable Telegram Alerts", value=False)
+        if st.button("🚀 Send Test Alert"):
+            send_telegram_alert("✅ System Check: Connection established.")
+            st.toast("Test Sent!")
         if "last_alert_time" not in st.session_state: st.session_state.last_alert_time = None
 
-    ticker_info = ASSETS[region][asset_name]
-    ticker = ticker_info['ticker']; emoji = ticker_info['emoji']; tf_params = TIMEFRAMES[timeframe]
+    ticker = ASSETS[region][asset]['ticker']
+    emoji = ASSETS[region][asset]['emoji']
     strategy = STRATEGIES[strategy_name]
 
-    with st.spinner(f"📡 Syncing live IST data for {asset_name}..."):
-        df = fetch_data(ticker, region, tf_params['interval'])
+    with st.spinner("Syncing..."):
+        df = fetch_data(ticker, tf)
 
-    if df is None or len(df) < 50:
-        st.error(f"⚠️ No data available for this selection. Market might be closed.")
+    if df is None or len(df) < 20:
+        st.warning(f"⚠️ Market is currently offline or Rate-Limited. Try Global Proxies or a higher timeframe (1h).")
         st.stop()
 
-    df = strategy.apply_indicators(df)
-    df = strategy.generate_signals(df)
-    
+    df = strategy.generate_signals(strategy.apply_indicators(df))
     curr = df.iloc[-1]
-    prev_close = df.iloc[-2]['Close'] if len(df) > 1 else curr['Close']
-    chg_pct = ((curr['Close'] - prev_close) / prev_close) * 100
-    current_atr = curr.get(f'ATRr_14', 0.0)
-    
-    active_trend = "BULLISH 🟢" if ('EMA_200' in df and curr['Close'] > curr['EMA_200']) else "BEARISH 🔴"
-    if 'EMA_200' not in df: active_trend = "NEUTRAL ⚪"
+    prev_close = df.iloc[-2]['Close']
+    chg = ((curr['Close'] - prev_close) / prev_close) * 100
+    atr = curr.get('ATRr_14', 0)
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("💰 Price (INR)", f"₹{curr['Close']:,.2f}", f"{chg_pct:.2f}%")
-    col2.metric("📈 24h Trend Bias", active_trend)
-    col3.metric("📏 Volatility (ATR)", f"₹{current_atr:.2f}")
+    # Metrics Row
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Price (INR)", f"₹{curr['Close']:,.0f}", f"{chg:.2f}%")
+    c2.metric("Trend", "BULLISH 🟢" if curr['Close'] > curr['EMA_200'] else "BEARISH 🔴")
+    c3.metric("ATR (Volatility)", f"₹{atr:.1f}")
     
-    latest_signal = curr['Signal']
-    latest_time = df.index[-1]
-    signal_text = "BUY 🟢" if latest_signal == 1 else "SELL 🔴" if latest_signal == -1 else "NONE ⚪"
-    col4.metric("🤖 Live Algo Signal", signal_text)
+    sig = curr['Signal']
+    c4.metric("Live Signal", "BUY 🟢" if sig == 1 else "SELL 🔴" if sig == -1 else "NONE")
 
-    # Automated Alerts
-    if enable_alerts and latest_signal != 0 and st.session_state.last_alert_time != latest_time:
-        sig_str = "BULLISH BUY" if latest_signal == 1 else "BEARISH SELL"
-        sl_calc = curr['Close'] - (1.5 * current_atr) if latest_signal == 1 else curr['Close'] + (1.5 * current_atr)
-        msg = f"{emoji} **{asset_name} ({timeframe})**: {sig_str}\n🤖 Algo: {strategy.name}\n💰 Price: ₹{curr['Close']:,.2f}\n📐 Suggested SL: ₹{sl_calc:,.2f}"
+    # Alert Trigger
+    if enable_alerts and sig != 0 and st.session_state.last_alert_time != df.index[-1]:
+        txt = "BULLISH BUY" if sig == 1 else "BEARISH SELL"
+        msg = f"{emoji} **{asset}**: {txt}\n💰 Price: ₹{curr['Close']:,.0f}"
         send_telegram_alert(msg)
-        st.session_state.last_alert_time = latest_time
-        st.toast(f"Telegram Alert Sent!", icon="🚀")
+        st.session_state.last_alert_time = df.index[-1]
 
-    st.markdown("<hr style='border:1px solid #e6e6e6'>", unsafe_allow_html=True)
-    st.markdown(f"### 📊 Advanced Charting ({asset_name} in IST)")
-    
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(
-        x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
-        name='Price (INR)', increasing_line_color='#089981', decreasing_line_color='#F23645'
-    ))
+    # Chart
+    fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price')])
     strategy.add_chart_overlays(fig, df)
-
+    
     bulls, bears = df[df['Signal'] == 1], df[df['Signal'] == -1]
-    fig.add_trace(go.Scatter(x=bulls.index, y=bulls['Low'] - current_atr, mode='markers', marker=dict(symbol='triangle-up', color='#089981', size=14, line=dict(width=1, color='black')), name='Buy Signal'))
-    fig.add_trace(go.Scatter(x=bears.index, y=bears['High'] + current_atr, mode='markers', marker=dict(symbol='triangle-down', color='#F23645', size=14, line=dict(width=1, color='black')), name='Sell Signal'))
+    fig.add_trace(go.Scatter(x=bulls.index, y=bulls['Low'] - atr, mode='markers', marker=dict(symbol='triangle-up', color='#089981', size=12), name='Buy'))
+    fig.add_trace(go.Scatter(x=bears.index, y=bears['High'] + atr, mode='markers', marker=dict(symbol='triangle-down', color='#F23645', size=12), name='Sell'))
 
-    fig.update_layout(
-        template="plotly_white", plot_bgcolor="#ffffff", paper_bgcolor="#ffffff",
-        xaxis_rangeslider_visible=False, height=650, margin=dict(l=20, r=20, t=30, b=20),
-        xaxis=dict(showgrid=True, gridcolor='#f0f2f6', gridwidth=1, title="Indian Standard Time (IST)"), 
-        yaxis=dict(showgrid=True, gridcolor='#f0f2f6', gridwidth=1, tickprefix="₹"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(255,255,255,0.8)")
-    )
+    fig.update_layout(template="plotly_white", xaxis_rangeslider_visible=False, height=600, margin=dict(l=10, r=10, t=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("<hr style='border:1px solid #e6e6e6'>", unsafe_allow_html=True)
-    st.markdown("### 📝 Historical Signal Ledger")
-    
-    signal_history = df[df['Signal'] != 0].copy()
-    if not signal_history.empty:
-        signal_history['Action'] = signal_history['Signal'].map({1: '🟢 BUY', -1: '🔴 SELL'})
-        display_cols = ['Action', 'Close']
-        if 'RSI_14' in signal_history.columns: display_cols.append('RSI_14')
-        if 'ATRr_14' in signal_history.columns: display_cols.append('ATRr_14')
-        
-        log_df = signal_history[display_cols].iloc[::-1].head(10)
-        log_df.index = log_df.index.strftime('%Y-%m-%d %H:%M:%S IST')
-        log_df.index.name = 'Timestamp (IST)'
-        
-        st.dataframe(
-            log_df, use_container_width=True,
-            column_config={
-                "Close": st.column_config.NumberColumn("Entry (₹)", format="₹%d"),
-                "RSI_14": st.column_config.NumberColumn("RSI", format="%.1f"),
-                "ATRr_14": st.column_config.NumberColumn("ATR (₹)", format="₹%.1f")
-            }
-        )
-    else:
-        st.info("No major signal crossovers found in the recent history.")
+    # Ledger
+    st.subheader("📝 Signal History")
+    history = df[df['Signal'] != 0].copy()
+    if not history.empty:
+        history['Action'] = history['Signal'].map({1: '🟢 BUY', -1: '🔴 SELL'})
+        log = history[['Action', 'Close']].iloc[::-1].head(10)
+        log.index = log.index.strftime('%H:%M %d-%b')
+        st.dataframe(log, use_container_width=True)
 
 if __name__ == "__main__": main()
