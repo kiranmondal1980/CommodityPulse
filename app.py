@@ -41,18 +41,18 @@ st.markdown("""
 # ==========================================
 # CONSTANTS & ASSET MAPPINGS
 # ==========================================
-# We use Spot prices (XAUUSD=X) for MCX Estimation because they are much more stable
 ASSETS = {
-    "Indian MCX (Estimated in INR)": {
-        'Gold (MCX)': {'ticker': 'XAUUSD=X', 'emoji': '🟡'},
-        'Silver (MCX)': {'ticker': 'XAGUSD=X', 'emoji': '⚪'},
-        'Crude Oil (MCX)': {'ticker': 'BZ=F', 'emoji': '🛢️'}, 
-        'Natural Gas (MCX)': {'ticker': 'NG=F', 'emoji': '🔥'}
-    },
-    "Global Proxies (in INR)": {
+    "Global Proxy (in INR)": {
         'Crude Oil (WTI)': {'ticker': 'CL=F', 'emoji': '🛢️'},
-        'Gold (Global)': {'ticker': 'GC=F', 'emoji': '🟡'},
-        'Silver (Global)': {'ticker': 'SI=F', 'emoji': '⚪'}
+        'Natural Gas': {'ticker': 'NG=F', 'emoji': '🔥'},
+        'Gold': {'ticker': 'GC=F', 'emoji': '🟡'},
+        'Silver': {'ticker': 'SI=F', 'emoji': '⚪'}
+    },
+    "Indian MCX (in INR)": {
+        'Crude Oil (MCX)': {'ticker': 'BZ=F', 'emoji': '🛢️'}, 
+        'Natural Gas (MCX)': {'ticker': 'NG=F', 'emoji': '🔥'},
+        'Gold (MCX)': {'ticker': 'GC=F', 'emoji': '🟡'},
+        'Silver (MCX)': {'ticker': 'SI=F', 'emoji': '⚪'}
     }
 }
 
@@ -99,19 +99,21 @@ STRATEGIES = {"Trend Confluence": TrendConfluence()}
 # ==========================================
 # DATA, CURRENCY, AND TIMEZONE FUNCTIONS
 # ==========================================
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600) # Cache exchange rate for 1 hour
 def get_usdinr_rate():
     try:
         usdinr = yf.download("INR=X", period="1d", interval="1d", progress=False)
         return float(usdinr['Close'].iloc[-1])
     except:
-        return 83.50 
+        return 83.50 # Fallback live rate if fetch fails
 
 @st.cache_data(ttl=600)
 def fetch_data(ticker, region, timeframe):
     time.sleep(1) 
-    # yfinance rule: 15m intervals only allow 60 days history
-    fetch_period = "60d" if timeframe == "15m" else "2y"
+    
+    if timeframe == "15m": fetch_period = "60d"
+    elif timeframe == "1h": fetch_period = "730d"
+    else: fetch_period = "2y"
         
     try:
         df = yf.download(ticker, period=fetch_period, interval=timeframe, progress=False)
@@ -120,27 +122,23 @@ def fetch_data(ticker, region, timeframe):
             df.columns = df.columns.get_level_values(0)
         df.dropna(inplace=True)
 
-        # 1. Convert to Indian Standard Time (IST)
+        # 1. TIMEZONE CONVERSION (Convert to IST)
         if df.index.tz is None:
             df.index = df.index.tz_localize('UTC').tz_convert('Asia/Kolkata')
         else:
             df.index = df.index.tz_convert('Asia/Kolkata')
 
-        # 2. MCX Price Calibration (INR + Import Duty + Weights)
+        # 2. CURRENCY & UNIT CONVERSION (Convert USD to INR with MCX Weights)
         usdinr_rate = get_usdinr_rate()
-        import_duty = 1.15 # Approx 15% Indian Customs Duty & Taxes
         
-        # Calibration Logic
-        if ticker in ['XAUUSD=X', 'GC=F']: 
-            # Multiplier: (USD Price / 31.1035 oz to grams) * 10 grams * usdinr * duty
-            multiplier = (usdinr_rate / 31.1034768) * 10 * import_duty
-        elif ticker in ['XAGUSD=X', 'SI=F']:
-            # Multiplier: (USD Price / 31.1035 oz to grams) * 1000 grams (1kg) * usdinr * duty
-            multiplier = (usdinr_rate / 31.1034768) * 1000 * import_duty
-        else:
-            # Crude Oil and Gas are quoted per unit (Barrel/mmBtu) in INR on MCX
+        if ticker == 'GC=F': # Global Gold is per Troy Oz. MCX is per 10 grams.
+            multiplier = usdinr_rate * (10 / 31.1034768)
+        elif ticker == 'SI=F': # Global Silver is per Troy Oz. MCX is per 1 Kg.
+            multiplier = usdinr_rate * (1000 / 31.1034768)
+        else: # Crude Oil & Nat Gas (1 Barrel / 1 mmBtu matches MCX)
             multiplier = usdinr_rate
 
+        # Scale all price columns to true INR value
         for col in ['Open', 'High', 'Low', 'Close']:
             df[col] = df[col] * multiplier
 
@@ -177,7 +175,7 @@ def main():
         
         enable_alerts = st.toggle("🔔 Enable Live Telegram Alerts", value=False)
         if st.button("🚀 Send Test Alert", use_container_width=True):
-            send_telegram_alert("✅ CommodityPulse Pro: System test successful! Alerts are active in IST and INR.")
+            send_telegram_alert("✅ CommodityPulse Pro: System test successful! Alerts are active in IST.")
             st.toast("Test alert sent to your Telegram!", icon="🚀")
             
         if "last_alert_time" not in st.session_state: st.session_state.last_alert_time = None
@@ -190,7 +188,7 @@ def main():
         df = fetch_data(ticker, region, tf_params['interval'])
 
     if df is None or len(df) < 50:
-        st.error(f"⚠️ No data available for this selection. Market might be closed.")
+        st.error(f"⚠️ No data returned. Market might be closed.")
         st.stop()
 
     df = strategy.apply_indicators(df)
@@ -206,16 +204,16 @@ def main():
 
     st.markdown("<br>", unsafe_allow_html=True)
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("💰 Price (INR)", f"₹{curr['Close']:,.2f}", f"{chg_pct:.2f}%")
+    # Changed $ to ₹
+    col1.metric("💰 Current Price (INR)", f"₹{curr['Close']:,.2f}", f"{chg_pct:.2f}%")
     col2.metric("📈 24h Trend Bias", active_trend)
-    col3.metric("📏 Volatility (ATR)", f"₹{current_atr:.2f}")
+    col3.metric("📏 Volatility (ATR in ₹)", f"₹{current_atr:.2f}")
     
     latest_signal = curr['Signal']
     latest_time = df.index[-1]
     signal_text = "BUY 🟢" if latest_signal == 1 else "SELL 🔴" if latest_signal == -1 else "NONE ⚪"
     col4.metric("🤖 Live Algo Signal", signal_text)
 
-    # Automated Alerts
     if enable_alerts and latest_signal != 0 and st.session_state.last_alert_time != latest_time:
         sig_str = "BULLISH BUY" if latest_signal == 1 else "BEARISH SELL"
         sl_calc = curr['Close'] - (1.5 * current_atr) if latest_signal == 1 else curr['Close'] + (1.5 * current_atr)
@@ -225,7 +223,7 @@ def main():
         st.toast(f"Telegram Alert Sent!", icon="🚀")
 
     st.markdown("<hr style='border:1px solid #e6e6e6'>", unsafe_allow_html=True)
-    st.markdown(f"### 📊 Advanced Charting ({asset_name} in IST)")
+    st.markdown(f"### 📊 Advanced Charting (IST Timeline)")
     
     fig = go.Figure()
     fig.add_trace(go.Candlestick(
@@ -248,7 +246,7 @@ def main():
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("<hr style='border:1px solid #e6e6e6'>", unsafe_allow_html=True)
-    st.markdown("### 📝 Historical Signal Ledger")
+    st.markdown("### 📝 Historical Ledger")
     
     signal_history = df[df['Signal'] != 0].copy()
     if not signal_history.empty:
@@ -258,18 +256,20 @@ def main():
         if 'ATRr_14' in signal_history.columns: display_cols.append('ATRr_14')
         
         log_df = signal_history[display_cols].iloc[::-1].head(10)
+        
+        # Ensure the index displays as clean IST timezone
         log_df.index = log_df.index.strftime('%Y-%m-%d %H:%M:%S IST')
         log_df.index.name = 'Timestamp (IST)'
         
         st.dataframe(
             log_df, use_container_width=True,
             column_config={
-                "Close": st.column_config.NumberColumn("Entry (₹)", format="₹%d"),
-                "RSI_14": st.column_config.NumberColumn("RSI", format="%.1f"),
-                "ATRr_14": st.column_config.NumberColumn("ATR (₹)", format="₹%.1f")
+                "Close": st.column_config.NumberColumn("Entry Price", format="₹%d"),
+                "RSI_14": st.column_config.NumberColumn("RSI Momentum", format="%.1f"),
+                "ATRr_14": st.column_config.NumberColumn("Volatility (ATR)", format="₹%.1f")
             }
         )
     else:
-        st.info("No major signal crossovers found in the recent history.")
+        st.info("No signals generated in the current timeframe yet. Market is consolidating.")
 
 if __name__ == "__main__": main()
