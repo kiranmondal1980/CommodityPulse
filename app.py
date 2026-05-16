@@ -577,9 +577,31 @@ def main():
     with st.spinner(f"📅 Daily [{daily_interval}]…"):
         daily_bias, _, _ = fetch_htf(actual_ticker, daily_interval, fallback)
 
+    # ── INDICATORS & MCX FILTER ──────────────
     df = strategy.apply_indicators(df)
     df.dropna(inplace=True)
+    
+    # 1. Generate Raw Signals
     df = strategy.generate_signals(df, htf_bias=htf_bias)
+
+    # 2. APPLY MCX TIME FILTER (The "Indian Reality" Filter)
+    # This identifies candles that happen when MCX is CLOSED
+    df['ist_hour'] = df.index.hour
+    df['ist_minute'] = df.index.minute
+    df['day_of_week'] = df.index.dayofweek # 0=Mon, 4=Fri, 5=Sat, 6=Sun
+
+    # Logic: Market is OPEN if (Time >= 09:00 AND Time <= 23:30) AND Day <= 4 (Mon-Fri)
+    # We create a mask for when the market is CLOSED
+    is_mcx_closed = (
+        (df['ist_hour'] < 9) | 
+        ((df['ist_hour'] == 23) & (df['ist_minute'] > 30)) | 
+        (df['ist_hour'] > 23) |
+        (df['day_of_week'] > 4)
+    )
+
+    # 3. Mute all signals during closed hours
+    df.loc[is_mcx_closed, 'Signal'] = 0
+    # ─────────────────────────────────────────
 
     curr       = df.iloc[-1]
     prev_close = df.iloc[-2]['Close'] if len(df)>1 else curr['Close']
