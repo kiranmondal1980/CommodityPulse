@@ -822,7 +822,7 @@ def main():
         se4.metric("📊 Total Signals", str(n_tr))
 
         with st.expander("📋 Trade Log (Last 20)", expanded=False):
-            tdf = bt['trade_df'].tail(20).copy()
+            tdf = bt['trade_df'].copy()
             tdf['Action']  = tdf['signal'].map({1:'🟢 BUY',-1:'🔴 SELL'})
             tdf['Result']  = tdf['outcome'].map({'win':'✅ WIN','loss':'❌ LOSS'})
             tdf['time']    = pd.to_datetime(tdf['time']).dt.strftime('%Y-%m-%d %H:%M IST')
