@@ -390,7 +390,7 @@ def run_backtest(df, atr_col, lot_size, capital_start, risk_pct):
 
         if outcome == "open": continue   # incomplete trade — skip from stats
 
-        equity += pnl_inl = pnl_inr
+       equity += pnl_inr
         equity_curve.append(equity)
         trades.append({
             "time":    sig_time,
