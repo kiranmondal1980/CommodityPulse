@@ -663,7 +663,7 @@ def main():
     if daily_interval != htf_interval: tf_biases[daily_interval] = daily_bias
     st.markdown(render_matrix(tf_biases), unsafe_allow_html=True)
 
-    if regime == "choppy":if regime == "choppy":
+    if regime == "choppy":
         adx_val_str = f"{current_adx:.1f}" if current_adx else "N/A"
         st.warning(f"⚠️ ADX={adx_val_str} — CHOPPY market. Trend signals are unreliable. Wait for ADX > 20.", icon="⚠️")
 
