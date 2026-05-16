@@ -623,9 +623,10 @@ def main():
     bt = run_backtest(df, atr_col, lot_size, capital_inr, risk_pct)
 
     if enable_alerts and latest_signal!=0 and st.session_state.last_alert_time!=latest_time:
+        adx_str = f"{current_adx:.1f}" if current_adx else "N/A"
         send_telegram(
             f"{emoji} *{asset_name} ({timeframe})* — {'BULLISH BUY ✅' if latest_signal==1 else 'BEARISH SELL 🔴'}\n"
-            f"🤖 {strategy.name} | ADX {current_adx:.1f if current_adx else 'N/A'}\n"
+            f"🤖 {strategy.name} | ADX {adx_str}\n"
             f"💰 ₹{curr['Close']:,.2f} | SL ₹{sl_price:,.2f}\n"
             f"🎯 TP1 ₹{tp1:,.2f} · TP2 ₹{tp2:,.2f}\n"
             f"📦 {lots} lot(s) to risk ₹{risk_data['actual_risk']:,.0f}"
@@ -662,8 +663,9 @@ def main():
     if daily_interval != htf_interval: tf_biases[daily_interval] = daily_bias
     st.markdown(render_matrix(tf_biases), unsafe_allow_html=True)
 
-    if regime == "choppy":
-        st.warning(f"⚠️ ADX={current_adx:.1f if current_adx else 'N/A'} — CHOPPY market. Trend signals are unreliable. Wait for ADX > 20.", icon="⚠️")
+    if regime == "choppy":if regime == "choppy":
+        adx_val_str = f"{current_adx:.1f}" if current_adx else "N/A"
+        st.warning(f"⚠️ ADX={adx_val_str} — CHOPPY market. Trend signals are unreliable. Wait for ADX > 20.", icon="⚠️")
 
     with st.expander("🔭 Multi-Timeframe Detail", expanded=False):
         d1,d2,d3 = st.columns(3)
