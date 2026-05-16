@@ -17,6 +17,7 @@ ASSETS = {
     'NG=F':      {'name': 'Natural Gas',  'emoji': '🔥', 'type': 'comm'},
     'XAUUSD=X':  {'name': 'Gold (MCX)',   'emoji': '🟡', 'type': 'gold'},
     'XAGUSD=X':  {'name': 'Silver (MCX)', 'emoji': '⚪', 'type': 'silver'}
+    'BTC-USD':   {'name': 'Bitcoin',      'emoji': '₿',  'type': 'comm'} # 'comm' type uses direct USDINR rate
 }
 
 # ==========================================
