@@ -165,10 +165,7 @@ ASSETS = {
         'Gold':            {'ticker':'GC=F','fallback':None,   'emoji':'🟡','lot_size':10, 'lot_unit':'grams',  'mcx_lot':10},
         'Silver':          {'ticker':'SI=F','fallback':None,   'emoji':'⚪','lot_size':1,  'lot_unit':'kg',     'mcx_lot':30},
     },
-           "Cryptocurrency (in INR)": {
-        'Bitcoin': {'ticker': 'BTC-USD', 'emoji': '₿'},
-        'Ethereum': {'ticker': 'ETH-USD', 'emoji': '⟠'}
-    },
+
 
     "Indian MCX (in INR)": {
         'Crude Oil (MCX)':   {'ticker':'BZ=F','fallback':'CL=F','emoji':'🛢️','lot_size':100,'lot_unit':'barrels','mcx_lot':100},
