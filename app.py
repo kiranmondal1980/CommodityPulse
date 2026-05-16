@@ -1,5 +1,5 @@
 """
-CommodityPulse Pro — Phase 3
+CommodityPulse Pro — Phase 3 (Mobile Optimized & Bug Fixed)
 Upgrades:  Smart Risk & Position Sizing · Dual-Target TP · Live Backtester
            Chandelier Exit Trail · Grouped Metric Sections · Full INR display
 """
@@ -137,6 +137,17 @@ section[data-testid="stSidebar"] .stSelectbox>div>div { background:#161b22; bord
 .bt-card .bt-val.g { color:#089981; } .bt-card .bt-val.r { color:#F23645; }
 .bt-card .bt-label { font-size:10px; letter-spacing:1px; text-transform:uppercase; color:#64748b; margin-top:4px; }
 .bt-card .bt-sub   { font-size:11px; color:#94a3b8; margin-top:2px; }
+
+/* ── MOBILE RESPONSIVENESS (NEW) ── */
+@media (max-width: 768px) {
+    .bt-grid { grid-template-columns: repeat(2, 1fr); }
+    .matrix-cell { min-width: 45%; }
+    .drow { font-size: 11px; }
+}
+@media (max-width: 480px) {
+    .bt-grid { grid-template-columns: 1fr; }
+    .matrix-cell { min-width: 100%; }
+}
 
 #MainMenu { visibility:hidden; } footer { visibility:hidden; }
 </style>
@@ -284,33 +295,24 @@ STRATEGIES = {"Trend Confluence (MTF)": TrendConfluence()}
 # CHANDELIER EXIT (ATR-BASED TRAILING STOP)
 # ──────────────────────────────────────────
 def compute_chandelier(df, atr_col, period=22, multiplier=3.0):
-    """
-    Chandelier Exit — trails the highest high (for longs) or lowest low (for shorts)
-    minus/plus ATR×multiplier.  Returns a Series aligned to df.index.
-    """
     if atr_col not in df.columns: return pd.Series(dtype=float, index=df.index)
     highest_high = df['High'].rolling(period).max()
     lowest_low   = df['Low'].rolling(period).min()
     atr          = df[atr_col]
     long_stop    = highest_high - multiplier * atr
-    # Use long stop (sell-trail) as our dotted line — most useful for uptrend protection
     return long_stop
 
 # ──────────────────────────────────────────
 # RISK & POSITION SIZING
 # ──────────────────────────────────────────
 def compute_risk(capital_inr, risk_pct, atr_inr, lot_size, price):
-    """
-    Returns full risk breakdown dict.
-    SL = 1.5×ATR per unit.
-    """
     risk_inr    = capital_inr * (risk_pct / 100.0)
-    sl_dist     = 1.5 * atr_inr          # per unit (e.g. per barrel / per gram)
-    sl_per_lot  = sl_dist * lot_size      # ₹ risk per 1 lot
+    sl_dist     = 1.5 * atr_inr          
+    sl_per_lot  = sl_dist * lot_size      
     lots        = max(1, math.floor(risk_inr / sl_per_lot)) if sl_per_lot > 0 else 1
     actual_risk = lots * sl_per_lot
     risk_pct_actual = (actual_risk / capital_inr) * 100
-    margin_approx   = lots * lot_size * price * 0.07   # ~7% span margin (MCX)
+    margin_approx   = lots * lot_size * price * 0.07   
     return {
         "risk_inr":        risk_inr,
         "sl_dist":         sl_dist,
@@ -325,38 +327,20 @@ def compute_risk(capital_inr, risk_pct, atr_inr, lot_size, price):
 # DUAL-TARGET TAKE PROFIT
 # ──────────────────────────────────────────
 def dual_tp(entry, sl, signal):
-    """
-    Returns (tp1, tp2) based on SL distance.
-    TP1 = 1.5R  (conservative)
-    TP2 = 3.0R  (aggressive)
-    """
     risk = abs(entry - sl)
-    if signal == 1:
-        return entry + 1.5 * risk, entry + 3.0 * risk
-    else:
-        return entry - 1.5 * risk, entry - 3.0 * risk
+    if signal == 1: return entry + 1.5 * risk, entry + 3.0 * risk
+    else: return entry - 1.5 * risk, entry - 3.0 * risk
 
 # ──────────────────────────────────────────
 # LIVE BACKTESTER
 # ──────────────────────────────────────────
 def run_backtest(df, atr_col, lot_size, capital_start, risk_pct):
-    """
-    Walks forward through all signals.
-    Each trade: entry = Close at signal bar
-    SL  = 1.5×ATR below/above entry
-    TP1 = 1.5R, TP2 = 3.0R (count TP1 as a WIN, size = 1R profit per lot)
-    Trade result checked on subsequent candles.
-
-    Returns stats dict.
-    """
     signals = df[df['Signal'] != 0].copy()
-    if signals.empty or atr_col not in df.columns:
-        return None
+    if signals.empty or atr_col not in df.columns: return None
 
     equity   = capital_start
     equity_curve = [capital_start]
     trades   = []
-
     df_idx   = list(df.index)
 
     for sig_time, sig_row in signals.iterrows():
@@ -373,7 +357,6 @@ def run_backtest(df, atr_col, lot_size, capital_start, risk_pct):
         sl_per_lot = sl_dist * lot_size
         lots       = max(1, math.floor(risk_inr / sl_per_lot)) if sl_per_lot > 0 else 1
 
-        # Forward-scan for outcome
         start_idx = df_idx.index(sig_time) + 1
         outcome   = "open"
         pnl_inr   = 0.0
@@ -388,7 +371,7 @@ def run_backtest(df, atr_col, lot_size, capital_start, risk_pct):
                 if h >= sl:  outcome = "loss"; pnl_inr = -lots * sl_dist * lot_size; break
                 if l <= tp1: outcome = "win";  pnl_inr =  lots * sl_dist * lot_size * 1.5; break
 
-        if outcome == "open": continue   # incomplete trade — skip from stats
+        if outcome == "open": continue   
 
         equity += pnl_inr
         equity_curve.append(equity)
@@ -403,8 +386,7 @@ def run_backtest(df, atr_col, lot_size, capital_start, risk_pct):
             "equity":  equity,
         })
 
-    if not trades:
-        return None
+    if not trades: return None
 
     trade_df = pd.DataFrame(trades)
     wins     = trade_df[trade_df['outcome'] == 'win']
@@ -416,7 +398,6 @@ def run_backtest(df, atr_col, lot_size, capital_start, risk_pct):
     profit_factor= gross_profit / gross_loss if gross_loss > 0 else float('inf')
     expectancy   = trade_df['pnl'].mean()
 
-    # Max drawdown on equity curve
     eq = pd.Series(equity_curve)
     roll_max = eq.cummax()
     drawdown = (eq - roll_max)
@@ -435,6 +416,7 @@ def run_backtest(df, atr_col, lot_size, capital_start, risk_pct):
         "final_equity":   equity,
         "trade_df":       trade_df,
     }
+
 # ──────────────────────────────────────────
 # CONFLUENCE MATRIX
 # ──────────────────────────────────────────
@@ -467,107 +449,71 @@ def render_matrix(tf_biases):
 # CHART HELPERS
 # ──────────────────────────────────────────
 def draw_dual_tp_zones(fig, df, last_sig_idx, signal, sl, tp1, tp2, row=1):
-    """Draw TP1 (conservative, medium green) and TP2 (aggressive, strong green) shaded bands."""
     if signal == 0: return
     entry = float(df.iloc[last_sig_idx]['Close'])
     x0    = df.index[last_sig_idx]
     x1    = df.index[min(last_sig_idx + 25, len(df)-1)]
 
     zones = [
-        # (y_lo, y_hi, fill, line, label, font_color)
-        (min(entry,sl),  max(entry,sl),  "rgba(248,81,73,.10)", "rgba(248,81,73,.7)",
-         f"  SL ₹{sl:,.0f}", "#f85149"),
-        (min(entry,tp1), max(entry,tp1), "rgba(16,185,129,.12)", "rgba(16,185,129,.7)",
-         f"  TP1 ₹{tp1:,.0f}  (1.5R — Conservative)", "#10b981"),
-        (min(entry,tp2), max(entry,tp2), "rgba(5,150,105,.20)",  "rgba(5,150,105,.9)",
-         f"  TP2 ₹{tp2:,.0f}  (3R — Aggressive)",     "#059669"),
+        (min(entry,sl),  max(entry,sl),  "rgba(248,81,73,.10)", "rgba(248,81,73,.7)", f"  SL ₹{sl:,.0f}", "#f85149"),
+        (min(entry,tp1), max(entry,tp1), "rgba(16,185,129,.12)", "rgba(16,185,129,.7)", f"  TP1 ₹{tp1:,.0f}  (1.5R — Conservative)", "#10b981"),
+        (min(entry,tp2), max(entry,tp2), "rgba(5,150,105,.20)",  "rgba(5,150,105,.9)", f"  TP2 ₹{tp2:,.0f}  (3R — Aggressive)",     "#059669"),
     ]
     for y0,y1,fill,lc,label,fc in zones:
-        fig.add_shape(type="rect", x0=x0,x1=x1, y0=y0,y1=y1,
-                      fillcolor=fill, line=dict(color=lc,width=1.5,dash="dot"),
-                      layer="below", row=row, col=1)
-        fig.add_annotation(x=x1, y=(y0+y1)/2, text=label, showarrow=False,
-                            font=dict(color=fc,size=10,family="IBM Plex Mono"),
-                            xanchor="left", bgcolor="rgba(255,255,255,.92)", row=row, col=1)
+        fig.add_shape(type="rect", x0=x0,x1=x1, y0=y0,y1=y1, fillcolor=fill, line=dict(color=lc,width=1.5,dash="dot"), layer="below", row=row, col=1)
+        fig.add_annotation(x=x1, y=(y0+y1)/2, text=label, showarrow=False, font=dict(color=fc,size=10,family="IBM Plex Mono"), xanchor="left", bgcolor="rgba(255,255,255,.92)", row=row, col=1)
 
-    # Entry line
-    fig.add_shape(type="line", x0=x0,x1=x1, y0=entry,y1=entry,
-                  line=dict(color="#58a6ff",width=1.5,dash="dash"), row=row, col=1)
-    fig.add_annotation(x=x1, y=entry, text=f"  Entry ₹{entry:,.0f}", showarrow=False,
-                        font=dict(color="#58a6ff",size=10,family="IBM Plex Mono"),
-                        xanchor="left", bgcolor="rgba(255,255,255,.92)", row=row, col=1)
+    fig.add_shape(type="line", x0=x0,x1=x1, y0=entry,y1=entry, line=dict(color="#58a6ff",width=1.5,dash="dash"), row=row, col=1)
+    fig.add_annotation(x=x1, y=entry, text=f"  Entry ₹{entry:,.0f}", showarrow=False, font=dict(color="#58a6ff",size=10,family="IBM Plex Mono"), xanchor="left", bgcolor="rgba(255,255,255,.92)", row=row, col=1)
 
 def draw_chandelier(fig, chan_series, df, row=1):
-    """Plot the chandelier trailing stop as a dotted magenta line."""
     valid = chan_series.dropna()
     if valid.empty: return
-    fig.add_trace(go.Scatter(
-        x=valid.index, y=valid.values,
-        name="Chandelier Trail",
-        line=dict(color="#e879f9", width=1.5, dash="dot"),
-        opacity=0.85
-    ), row=row, col=1)
+    fig.add_trace(go.Scatter(x=valid.index, y=valid.values, name="Chandelier Trail", line=dict(color="#e879f9", width=1.5, dash="dot"), opacity=0.85), row=row, col=1)
 
 def add_session_highlight(fig, df):
     today = datetime.now(IST).date()
     sess  = df[df.index.date == today]
     if sess.empty: return
-    fig.add_vrect(x0=sess.index[0], x1=sess.index[-1],
-                  fillcolor="rgba(37,99,235,.04)", layer="below", line_width=0,
-                  annotation_text="Today's Session", annotation_position="top left",
-                  annotation_font=dict(size=10,color="#2563eb",family="IBM Plex Mono"))
+    fig.add_vrect(x0=sess.index[0], x1=sess.index[-1], fillcolor="rgba(37,99,235,.04)", layer="below", line_width=0, annotation_text="Today's Session", annotation_position="top left", annotation_font=dict(size=10,color="#2563eb",family="IBM Plex Mono"))
 
 def add_adx_panel(fig, df, adx_col, row=2):
     if not adx_col or adx_col not in df.columns: return
     s = df[adx_col].dropna()
     if s.empty: return
-    fig.add_trace(go.Scatter(x=df.index, y=df[adx_col], name='ADX',
-                              line=dict(color='#a78bfa',width=2),
-                              fill='tozeroy', fillcolor='rgba(167,139,250,.07)'),
-                  row=row, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df[adx_col], name='ADX', line=dict(color='#a78bfa',width=2), fill='tozeroy', fillcolor='rgba(167,139,250,.07)'), row=row, col=1)
     for level,color,dash in [(20,'#f59e0b','dash'),(25,'#3b82f6','dash'),(40,'#3fb950','dot')]:
-        fig.add_shape(type="line", x0=df.index[0],x1=df.index[-1], y0=level,y1=level,
-                      line=dict(color=color,width=1,dash=dash), row=row, col=1)
+        fig.add_shape(type="line", x0=df.index[0],x1=df.index[-1], y0=level,y1=level, line=dict(color=color,width=1,dash=dash), row=row, col=1)
     latest = float(s.iloc[-1])
     lbl = f"ADX {latest:.1f} · {'TRENDING' if latest>=25 else 'WEAKLY TRENDING' if latest>=20 else 'CHOPPY'}"
     clr = "#3fb950" if latest>=25 else "#3b82f6" if latest>=20 else "#f59e0b"
-    fig.add_annotation(x=df.index[-1], y=latest, text=f"  {lbl}", showarrow=False,
-                        font=dict(color=clr,size=11,family="IBM Plex Mono"),
-                        xanchor="left", bgcolor="rgba(255,255,255,.92)",
-                        bordercolor=clr, borderwidth=1, borderpad=4, row=row, col=1)
+    fig.add_annotation(x=df.index[-1], y=latest, text=f"  {lbl}", showarrow=False, font=dict(color=clr,size=11,family="IBM Plex Mono"), xanchor="left", bgcolor="rgba(255,255,255,.92)", bordercolor=clr, borderwidth=1, borderpad=4, row=row, col=1)
 
 def add_volume_panel(fig, df, row=3):
     if 'Volume' not in df.columns or df['Volume'].sum()==0: return
     colors = ['#089981' if c>=o else '#F23645' for c,o in zip(df['Close'],df['Open'])]
-    fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Volume',
-                          marker_color=colors, marker_line_width=0, opacity=0.75),
-                  row=row, col=1)
+    fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Volume', marker_color=colors, marker_line_width=0, opacity=0.75), row=row, col=1)
 
 def send_telegram(msg):
     tok = os.environ.get('TELEGRAM_TOKEN') or st.secrets.get("TELEGRAM_TOKEN","")
     cid = os.environ.get('TELEGRAM_CHAT_ID') or st.secrets.get("TELEGRAM_CHAT_ID","")
     if not tok or not cid: return
-    try: requests.post(f"https://api.telegram.org/bot{tok}/sendMessage",
-                       json={"chat_id":cid,"text":msg,"parse_mode":"Markdown"})
+    try: requests.post(f"https://api.telegram.org/bot{tok}/sendMessage", json={"chat_id":cid,"text":msg,"parse_mode":"Markdown"})
     except: pass
 
 # ──────────────────────────────────────────
 # MAIN
 # ──────────────────────────────────────────
 def main():
-    # ── HEADER ──────────────────────────────
     st.markdown(
         "<h1 style='margin-bottom:2px'>⚡ CommodityPulse <span style='color:#2563eb'>Pro</span></h1>"
         "<p style='color:#64748b;font-size:13px;font-family:IBM Plex Mono,monospace;margin-top:0'>"
         "Phase 3 · Smart Risk Engine · Dual-TP · Live Backtester · Chandelier Trail · IST · INR</p>",
         unsafe_allow_html=True)
 
-    # ── SIDEBAR ─────────────────────────────
     with st.sidebar:
-        st.markdown("<h3 style='color:#58a6ff;font-family:Syne,sans-serif;font-size:18px'>⚙️ Terminal</h3>",
-                    unsafe_allow_html=True)
+        st.markdown("<h3 style='color:#58a6ff;font-family:Syne,sans-serif;font-size:18px'>⚙️ Terminal</h3>", unsafe_allow_html=True)
 
-        # Market Status
         mkt_status, now_ist = get_market_status()
         ts = now_ist.strftime('%H:%M IST')
         badge = (f"<span class='mkt-open'>🟢 MCX OPEN · {ts}</span>"  if mkt_status=="open"  else
@@ -583,19 +529,15 @@ def main():
         strategy_name = st.selectbox("🧠 Algorithm", list(STRATEGIES.keys()))
         st.divider()
 
-        # ── RISK MANAGEMENT ──────────────────
         st.markdown(
             "<p style='color:#58a6ff;font-size:13px;font-weight:700;letter-spacing:1px;"
             "text-transform:uppercase;margin-bottom:4px'>💰 Risk Management</p>",
             unsafe_allow_html=True)
-        capital_inr = st.number_input("Trading Capital (₹)", min_value=10_000,
-                                       max_value=10_000_000, value=500_000, step=50_000, format="%d")
+        capital_inr = st.number_input("Trading Capital (₹)", min_value=10_000, max_value=10_000_000, value=500_000, step=50_000, format="%d")
         risk_pct    = st.slider("Risk Per Trade (%)", min_value=0.5, max_value=5.0, value=2.0, step=0.5)
 
         st.divider()
-        # Chart options
-        st.markdown("<p style='color:#8b949e;font-size:11px;margin-bottom:4px'>🎨 CHART OPTIONS</p>",
-                    unsafe_allow_html=True)
+        st.markdown("<p style='color:#8b949e;font-size:11px;margin-bottom:4px'>🎨 CHART OPTIONS</p>", unsafe_allow_html=True)
         show_chandelier = st.toggle("📍 Chandelier Trail", value=True)
         chan_mult = st.slider("Trail Multiplier (ATR×)", 1.5, 5.0, 3.0, 0.5) if show_chandelier else 3.0
 
@@ -608,24 +550,19 @@ def main():
         if "last_alert_time" not in st.session_state:
             st.session_state.last_alert_time = None
 
-        st.markdown("<p style='color:#4b5563;font-size:10px;margin-top:14px'>"
-                    "MCX: Mon–Fri 09:00–23:30 IST</p>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#4b5563;font-size:10px;margin-top:14px'>MCX: Mon–Fri 09:00–23:30 IST</p>", unsafe_allow_html=True)
 
-    # ── RESOLVE ASSET ────────────────────────
     ti          = ASSETS[region][asset_name]
     ticker      = ti['ticker'];  fallback = ti.get('fallback')
     emoji       = ti['emoji'];   lot_size = ti['lot_size'];  lot_unit = ti['lot_unit']
     tf_params   = TIMEFRAMES[timeframe]
     strategy    = STRATEGIES[strategy_name]
 
-    # ── DATA FETCH ───────────────────────────
     with st.spinner(f"📡 Fetching {asset_name} [{timeframe}] — resilient engine…"):
         df, actual_ticker, used_fallback = fetch_data(ticker, tf_params['interval'], fallback)
 
     if used_fallback:
-        st.markdown(f"<div class='fallback-banner'>⚠️ {ticker} unavailable — auto-switched to "
-                    f"<b>{actual_ticker}</b>. Data live but may differ slightly.</div>",
-                    unsafe_allow_html=True)
+        st.markdown(f"<div class='fallback-banner'>⚠️ {ticker} unavailable — auto-switched to <b>{actual_ticker}</b>. Data live but may differ slightly.</div>", unsafe_allow_html=True)
     if df is None or len(df) < 50:
         st.error("⚠️ Data unavailable after 3 retries. Wait 60 s and refresh.")
         st.stop()
@@ -638,7 +575,6 @@ def main():
     with st.spinner(f"📅 Daily [{daily_interval}]…"):
         daily_bias, _, _ = fetch_htf(actual_ticker, daily_interval, fallback)
 
-    # ── INDICATORS ───────────────────────────
     df = strategy.apply_indicators(df)
     df.dropna(inplace=True)
     df = strategy.generate_signals(df, htf_bias=htf_bias)
@@ -670,14 +606,12 @@ def main():
         if not any(pd.isna(v) for v in [e9,e21,e200]):
             base_bias = 1 if e9>e21 and curr['Close']>e200 else (-1 if e9<e21 and curr['Close']<e200 else 0)
 
-    # ── SMART RISK CALC ──────────────────────
     risk_data = compute_risk(capital_inr, risk_pct, current_atr, lot_size, float(curr['Close']))
     lots      = risk_data['lots']
     sl_dist   = risk_data['sl_dist']
     sl_price  = (float(curr['Close'])-sl_dist) if latest_signal>=0 else (float(curr['Close'])+sl_dist)
     tp1, tp2  = dual_tp(float(curr['Close']), sl_price, latest_signal if latest_signal!=0 else 1)
 
-    # Risk level badge
     rp_actual = risk_data['risk_pct_actual']
     risk_level_html = (
         "<span class='risk-pill safe'>✅ SAFE</span>"   if rp_actual<2   else
@@ -685,20 +619,13 @@ def main():
         "<span class='risk-pill danger'>🔴 HIGH RISK</span>"
     )
 
-    # ── CHANDELIER ───────────────────────────
     chan_series = compute_chandelier(df, atr_col, period=22, multiplier=chan_mult) if show_chandelier else pd.Series()
-
-    # ── BACKTEST ─────────────────────────────
     bt = run_backtest(df, atr_col, lot_size, capital_inr, risk_pct)
 
-    # ── TELEGRAM ─────────────────────────────
     if enable_alerts and latest_signal!=0 and st.session_state.last_alert_time!=latest_time:
-        # Fix: Format ADX safely before putting it in the message
-        adx_str = f"{current_adx:.1f}" if current_adx else "N/A"
-        
         send_telegram(
             f"{emoji} *{asset_name} ({timeframe})* — {'BULLISH BUY ✅' if latest_signal==1 else 'BEARISH SELL 🔴'}\n"
-            f"🤖 {strategy.name} | ADX {adx_str}\n"
+            f"🤖 {strategy.name} | ADX {current_adx:.1f if current_adx else 'N/A'}\n"
             f"💰 ₹{curr['Close']:,.2f} | SL ₹{sl_price:,.2f}\n"
             f"🎯 TP1 ₹{tp1:,.2f} · TP2 ₹{tp2:,.2f}\n"
             f"📦 {lots} lot(s) to risk ₹{risk_data['actual_risk']:,.0f}"
@@ -706,9 +633,6 @@ def main():
         st.session_state.last_alert_time = latest_time
         st.toast("Telegram Alert Sent!", icon="🚀")
 
-    # ════════════════════════════════════════
-    # UI — SECTION 1: MARKET DATA
-    # ════════════════════════════════════════
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("<div class='section-header accent'>📊 Market Data</div>", unsafe_allow_html=True)
     mc1,mc2,mc3,mc4 = st.columns(4)
@@ -718,18 +642,13 @@ def main():
     adx_disp = f"{current_adx:.1f} · {regime.title()}" if current_adx else "N/A"
     mc4.metric("🌊 ADX / Regime", adx_disp)
 
-    # ════════════════════════════════════════
-    # UI — SECTION 2: ACCOUNT RISK
-    # ════════════════════════════════════════
     st.markdown("<div class='section-header accent'>🛡️ Account Risk</div>", unsafe_allow_html=True)
     rc1,rc2,rc3,rc4 = st.columns(4)
     rc1.metric("🤖 MTF Signal",       signal_text)
     rc2.metric("📦 Recommended Lots", f"{lots} lot(s)")
-    rc3.metric("💸 Capital at Risk",  f"₹{risk_data['actual_risk']:,.0f}",
-               f"{risk_data['risk_pct_actual']:.2f}% of capital")
+    rc3.metric("💸 Capital at Risk",  f"₹{risk_data['actual_risk']:,.0f}", f"{risk_data['risk_pct_actual']:.2f}% of capital")
     rc4.metric("🏦 Est. Margin Req.", f"₹{risk_data['margin_approx']:,.0f}")
 
-    # Risk pill row
     st.markdown(
         f"<p style='font-size:12px;color:#64748b;font-family:IBM Plex Mono,monospace;margin:4px 0'>"
         f"Risk classification: {risk_level_html}&nbsp;&nbsp;"
@@ -738,20 +657,14 @@ def main():
         f"SL distance: ₹{sl_dist:,.2f}/unit</p>",
         unsafe_allow_html=True)
 
-    # ════════════════════════════════════════
-    # SIGNAL CONFLUENCE MATRIX
-    # ════════════════════════════════════════
     st.markdown("<div class='section-header'>🧩 Signal Confluence Matrix</div>", unsafe_allow_html=True)
     tf_biases = {timeframe: base_bias, htf_interval: htf_bias}
     if daily_interval != htf_interval: tf_biases[daily_interval] = daily_bias
     st.markdown(render_matrix(tf_biases), unsafe_allow_html=True)
 
     if regime == "choppy":
-        # Fix: Format ADX safely here as well
-        adx_val_str = f"{current_adx:.1f}" if current_adx else "N/A"
-        st.warning(f"⚠️ ADX={adx_val_str} — CHOPPY market. "
-                   "Trend signals are unreliable. Wait for ADX > 20.", icon="⚠️")
-    # MTF Detail
+        st.warning(f"⚠️ ADX={current_adx:.1f if current_adx else 'N/A'} — CHOPPY market. Trend signals are unreliable. Wait for ADX > 20.", icon="⚠️")
+
     with st.expander("🔭 Multi-Timeframe Detail", expanded=False):
         d1,d2,d3 = st.columns(3)
         with d1:
@@ -767,9 +680,6 @@ def main():
             st.markdown(f"**Daily ({daily_interval})**")
             st.markdown(f"<h3 style='margin:4px 0'>{'🟢 BULLISH' if daily_bias==1 else '🔴 BEARISH' if daily_bias==-1 else '⚪ NEUTRAL'}</h3>", unsafe_allow_html=True)
 
-    # ════════════════════════════════════════
-    # POSITION SIZING CARDS (dual TP)
-    # ════════════════════════════════════════
     with st.expander("📦 Smart Risk & Position Sizing", expanded=True):
         pc1,pc2,pc3 = st.columns(3)
         dir_str = "LONG 🟢" if latest_signal>=0 else "SHORT 🔴"
@@ -813,7 +723,7 @@ def main():
     # ════════════════════════════════════════
     # MAIN CHART
     # ════════════════════════════════════════
-    st.markdown("<hr style='border:1px solid #e2e8f0;margin:24px 0 12px'>")
+    st.markdown("<hr style='border:1px solid #e2e8f0;margin:24px 0 12px'>", unsafe_allow_html=True)
     st.markdown("### 📊 Advanced Chart · IST · INR · Dual-TP · Chandelier Trail")
 
     has_vol = 'Volume' in df.columns and df['Volume'].sum()>0
@@ -821,43 +731,20 @@ def main():
     heights = [0.60,0.20,0.20] if has_vol else [0.75,0.25]
     titles  = ["Price (INR)","ADX","Volume"] if has_vol else ["Price (INR)","ADX"]
 
-    fig = make_subplots(rows=n_rows, cols=1, shared_xaxes=True,
-                        row_heights=heights, vertical_spacing=0.03,
-                        subplot_titles=titles)
+    fig = make_subplots(rows=n_rows, cols=1, shared_xaxes=True, row_heights=heights, vertical_spacing=0.03, subplot_titles=titles)
 
-    # Candlestick
-    fig.add_trace(go.Candlestick(
-        x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
-        name='Price (INR)',
-        increasing_line_color='#089981', increasing_fillcolor='#089981',
-        decreasing_line_color='#F23645', decreasing_fillcolor='#F23645'
-    ), row=1, col=1)
+    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price (INR)', increasing_line_color='#089981', increasing_fillcolor='#089981', decreasing_line_color='#F23645', decreasing_fillcolor='#F23645'), row=1, col=1)
 
-    # EMAs
     for L,clr,dash,w in [(9,'#3b82f6','solid',1.5),(21,'#f59e0b','solid',1.5),(200,'#1e293b','dot',2.5)]:
         cn = f'EMA_{L}'
-        if cn in df.columns:
-            fig.add_trace(go.Scatter(x=df.index,y=df[cn],name=f'EMA {L}',
-                                     line=dict(color=clr,width=w,dash=dash)), row=1, col=1)
+        if cn in df.columns: fig.add_trace(go.Scatter(x=df.index,y=df[cn],name=f'EMA {L}', line=dict(color=clr,width=w,dash=dash)), row=1, col=1)
 
-    # Chandelier trail
-    if show_chandelier and not chan_series.empty:
-        draw_chandelier(fig, chan_series, df, row=1)
+    if show_chandelier and not chan_series.empty: draw_chandelier(fig, chan_series, df, row=1)
 
-    # Buy / sell markers
     bulls = df[df['Signal']==1]; bears = df[df['Signal']==-1]
-    if not bulls.empty:
-        fig.add_trace(go.Scatter(x=bulls.index, y=bulls['Low']-current_atr*0.5,
-                                  mode='markers', name='MTF Buy',
-                                  marker=dict(symbol='triangle-up',color='#089981',size=14,
-                                              line=dict(width=1.5,color='white'))), row=1, col=1)
-    if not bears.empty:
-        fig.add_trace(go.Scatter(x=bears.index, y=bears['High']+current_atr*0.5,
-                                  mode='markers', name='MTF Sell',
-                                  marker=dict(symbol='triangle-down',color='#F23645',size=14,
-                                              line=dict(width=1.5,color='white'))), row=1, col=1)
+    if not bulls.empty: fig.add_trace(go.Scatter(x=bulls.index, y=bulls['Low']-current_atr*0.5, mode='markers', name='MTF Buy', marker=dict(symbol='triangle-up',color='#089981',size=14, line=dict(width=1.5,color='white'))), row=1, col=1)
+    if not bears.empty: fig.add_trace(go.Scatter(x=bears.index, y=bears['High']+current_atr*0.5, mode='markers', name='MTF Sell', marker=dict(symbol='triangle-down',color='#F23645',size=14, line=dict(width=1.5,color='white'))), row=1, col=1)
 
-    # Dual-TP zones for latest signal
     sig_series = df['Signal']
     nz = sig_series[sig_series!=0]
     if not nz.empty and current_atr>0:
@@ -868,34 +755,21 @@ def main():
         t1, t2  = dual_tp(entry_p, sl_p, ls)
         draw_dual_tp_zones(fig, df, li, ls, sl_p, t1, t2, row=1)
 
-    # Today's session band
-    if timeframe in ("15m","1h"):
-        add_session_highlight(fig, df)
-
-    # ADX + Volume
+    if timeframe in ("15m","1h"): add_session_highlight(fig, df)
     add_adx_panel(fig, df, adx_col, row=2)
     if has_vol: add_volume_panel(fig, df, row=3)
 
-    fig.update_layout(
-        template="plotly_white", plot_bgcolor="#ffffff", paper_bgcolor="#ffffff",
-        height=820, margin=dict(l=20,r=110,t=40,b=20),
-        xaxis_rangeslider_visible=False,
-        legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1,
-                    bgcolor="rgba(255,255,255,.92)",font=dict(family="IBM Plex Mono",size=11)),
-        font=dict(family="IBM Plex Mono"),
-    )
+    fig.update_layout(template="plotly_white", plot_bgcolor="#ffffff", paper_bgcolor="#ffffff", height=820, margin=dict(l=20,r=110,t=40,b=20), xaxis_rangeslider_visible=False, legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1, bgcolor="rgba(255,255,255,.92)",font=dict(family="IBM Plex Mono",size=11)), font=dict(family="IBM Plex Mono"))
     fig.update_yaxes(title_text="Price (₹)",tickprefix="₹",showgrid=True,gridcolor='#f1f5f9',row=1,col=1)
-    fig.update_yaxes(title_text="ADX",showgrid=True,gridcolor='#f1f5f9',
-                     title_font=dict(color="#a78bfa"),row=2,col=1)
+    fig.update_yaxes(title_text="ADX",showgrid=True,gridcolor='#f1f5f9', title_font=dict(color="#a78bfa"),row=2,col=1)
     if has_vol: fig.update_yaxes(title_text="Volume",showgrid=True,gridcolor='#f1f5f9',row=3,col=1)
-    fig.update_xaxes(title_text="Indian Standard Time (IST)",showgrid=True,gridcolor='#f1f5f9',
-                     title_font=dict(color="#64748b",size=11),row=n_rows,col=1)
+    fig.update_xaxes(title_text="Indian Standard Time (IST)",showgrid=True,gridcolor='#f1f5f9', title_font=dict(color="#64748b",size=11),row=n_rows,col=1)
     st.plotly_chart(fig, use_container_width=True)
 
     # ════════════════════════════════════════
     # STRATEGY ANALYTICS — LIVE BACKTEST
     # ════════════════════════════════════════
-    st.markdown("<hr style='border:1px solid #e2e8f0;margin:24px 0 12px'>")
+    st.markdown("<hr style='border:1px solid #e2e8f0;margin:24px 0 12px'>", unsafe_allow_html=True)
     st.markdown("### 🔬 Strategy Analytics — Live Backtest")
 
     if bt:
@@ -908,12 +782,10 @@ def main():
         gl   = bt['gross_loss']
         fe   = bt['final_equity']
 
-        # Colour helpers
         wr_cls  = "g" if wr>=55 else "a" if wr>=40 else "r"
         pf_cls  = "g" if pf>=1.5 else "a" if pf>=1.0 else "r"
         mdd_cls = "r" if abs(mdd)>capital_inr*0.10 else "a" if abs(mdd)>capital_inr*0.05 else "g"
         exp_cls = "g" if exp>0 else "r"
-
         pf_str = f"{pf:.2f}" if pf != float('inf') else "∞"
 
         st.markdown(f"""
@@ -940,7 +812,6 @@ def main():
             </div>
         </div>""", unsafe_allow_html=True)
 
-        # Secondary stats row
         se1,se2,se3,se4 = st.columns(4)
         se1.metric("💹 Gross Profit",  f"₹{gp:,.0f}")
         se2.metric("📉 Gross Loss",    f"₹{gl:,.0f}")
@@ -948,32 +819,27 @@ def main():
         se3.metric("🏦 Final Equity",  f"₹{fe:,.0f}", f"{fe_delta:+,.0f}")
         se4.metric("📊 Total Signals", str(n_tr))
 
-        # Trade log
         with st.expander("📋 Trade Log (Last 20)", expanded=False):
             tdf = bt['trade_df'].tail(20).copy()
             tdf['Action']  = tdf['signal'].map({1:'🟢 BUY',-1:'🔴 SELL'})
             tdf['Result']  = tdf['outcome'].map({'win':'✅ WIN','loss':'❌ LOSS'})
             tdf['time']    = pd.to_datetime(tdf['time']).dt.strftime('%Y-%m-%d %H:%M IST')
             show_cols = ['time','Action','entry','sl','tp1','Result','pnl','equity']
-            tdf_show  = tdf[show_cols].rename(columns={
-                'time':'Time (IST)','entry':'Entry ₹','sl':'SL ₹','tp1':'TP1 ₹',
-                'pnl':'P&L ₹','equity':'Running Equity ₹'
-            }).iloc[::-1]
+            tdf_show  = tdf[show_cols].rename(columns={'time':'Time (IST)','entry':'Entry ₹','sl':'SL ₹','tp1':'TP1 ₹','pnl':'P&L ₹','equity':'Running Equity ₹'}).iloc[::-1]
             st.dataframe(tdf_show, use_container_width=True, column_config={
-                'Entry ₹':          st.column_config.NumberColumn(format="₹%.2f"),
-                'SL ₹':             st.column_config.NumberColumn(format="₹%.2f"),
-                'TP1 ₹':            st.column_config.NumberColumn(format="₹%.2f"),
-                'P&L ₹':            st.column_config.NumberColumn(format="₹%.0f"),
+                'Entry ₹': st.column_config.NumberColumn(format="₹%.2f"),
+                'SL ₹': st.column_config.NumberColumn(format="₹%.2f"),
+                'TP1 ₹': st.column_config.NumberColumn(format="₹%.2f"),
+                'P&L ₹': st.column_config.NumberColumn(format="₹%.0f"),
                 'Running Equity ₹': st.column_config.NumberColumn(format="₹%.0f"),
             })
     else:
-        st.info("Insufficient completed signals in the current window for backtest statistics. "
-                "Try a longer timeframe or wait for more signals to develop.")
+        st.info("Insufficient completed signals in the current window for backtest statistics.")
 
     # ════════════════════════════════════════
     # SIGNAL LEDGER
     # ════════════════════════════════════════
-    st.markdown("<hr style='border:1px solid #e2e8f0;margin:24px 0 12px'>")
+    st.markdown("<hr style='border:1px solid #e2e8f0;margin:24px 0 12px'>", unsafe_allow_html=True)
     st.markdown("### 📝 Signal Ledger · MTF-Filtered")
 
     sig_hist = df[df['Signal']!=0].copy()
@@ -985,8 +851,7 @@ def main():
         log_df = sig_hist[dcols].iloc[::-1].head(15)
         log_df.index = log_df.index.strftime('%Y-%m-%d %H:%M IST')
         log_df.index.name = 'Timestamp (IST)'
-        cfg = {"Close": st.column_config.NumberColumn("Entry Price (₹)", format="₹%.2f"),
-               "RSI_14": st.column_config.NumberColumn("RSI", format="%.1f")}
+        cfg = {"Close": st.column_config.NumberColumn("Entry Price (₹)", format="₹%.2f"), "RSI_14": st.column_config.NumberColumn("RSI", format="%.1f")}
         if atr_col: cfg[atr_col] = st.column_config.NumberColumn("ATR (₹)", format="₹%.2f")
         if adx_col: cfg[adx_col] = st.column_config.NumberColumn("ADX", format="%.1f")
         st.dataframe(log_df, use_container_width=True, column_config=cfg)
