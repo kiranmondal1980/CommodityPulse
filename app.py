@@ -97,6 +97,16 @@ st.markdown(f"""
 }}
 
 html, body, [class*="css"] {{ font-family: 'IBM Plex Mono', monospace; }}
+
+/* Streamlit's built-in icons (sidebar collapse arrow, expander chevrons, etc.)
+   are rendered via a ligature font — e.g. the text "keyboard_double_arrow_left"
+   is invisible glyph-mapped text that becomes an arrow icon. The broad
+   [class*="css"] rule above was overriding that font, so the raw ligature
+   text showed up instead of the icon. This restores it. */
+[data-testid="stIconMaterial"], span[class*="material-symbols"], .material-symbols-rounded, .material-icons {{
+    font-family: 'Material Symbols Rounded', 'Material Icons' !important;
+    font-size: 1.25rem !important;
+}}
 .stApp {{ background: var(--bg-page); }}
 h1, h2, h3 {{ font-family: 'Syne', sans-serif; font-weight: 800; color: var(--text-primary); letter-spacing: -0.5px; }}
 p, span, label, div {{ color: var(--text-primary); }}
