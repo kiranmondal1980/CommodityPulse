@@ -44,8 +44,7 @@ if "compact_mobile" not in st.session_state:
 _THEME = st.session_state.theme_choice
 _MOBILE = st.session_state.compact_mobile
 
-# Brand constants — stay fixed across both themes (this is the one thing
-# that should never change: the blue/teal/red signal palette IS the brand).
+# Brand constants — stay fixed across both themes
 ACCENT   = "#2563eb"
 ACCENT_2 = "#7c3aed"
 SUCCESS  = "#089981"
@@ -96,19 +95,31 @@ st.markdown(f"""
     --warning: {WARNING};
 }}
 
-html, body, [class*="css"] {{ font-family: 'IBM Plex Mono', monospace; }}
-
-/* Streamlit's built-in icons (sidebar collapse arrow, expander chevrons, etc.)
-   are rendered via a ligature font — e.g. the text "keyboard_double_arrow_left"
-   is invisible glyph-mapped text that becomes an arrow icon. The broad
-   [class*="css"] rule above was overriding that font, so the raw ligature
-   text showed up instead of the icon. This restores it. */
-[data-testid="stIconMaterial"], span[class*="material-symbols"], .material-symbols-rounded, .material-icons {{
-    font-family: 'Material Symbols Rounded', 'Material Icons' !important;
-    font-size: 1.25rem !important;
+/* Safe generic typography styling — targets standard content, avoiding structural wrapper divs */
+html, body, .stApp, .stApp p, .stApp label, .stApp select, .stApp button, .stApp input, .stApp textarea {{
+    font-family: 'IBM Plex Mono', monospace !important;
 }}
+
+/* Robust font isolation for Streamlit's native icon ligatures */
+[data-testid="stIconMaterial"], 
+[data-testid="collapsedControl"] *,
+.material-symbols-outlined, 
+.material-symbols-rounded, 
+.material-icons,
+[class*="Icon"] {{
+    font-family: "Material Symbols Outlined", "Material Symbols Rounded", "Material Icons" !important;
+    font-style: normal !important;
+    font-weight: normal !important;
+    letter-spacing: normal !important;
+    text-transform: none !important;
+    white-space: nowrap !important;
+    word-wrap: normal !important;
+    direction: ltr !important;
+    -webkit-font-smoothing: antialiased !important;
+}}
+
 .stApp {{ background: var(--bg-page); }}
-h1, h2, h3 {{ font-family: 'Syne', sans-serif; font-weight: 800; color: var(--text-primary); letter-spacing: -0.5px; }}
+h1, h2, h3, h4 {{ font-family: 'Syne', sans-serif; font-weight: 800; color: var(--text-primary); letter-spacing: -0.5px; }}
 p, span, label, div {{ color: var(--text-primary); }}
 hr {{ border-color: var(--border) !important; }}
 ::selection {{ background: var(--accent); color: #fff; }}
@@ -131,11 +142,11 @@ div[data-testid="metric-container"]:hover {{
     transform: translateY(-3px); box-shadow: 0 8px 22px var(--chip-shadow);
 }}
 div[data-testid="metric-container"] > div:first-child {{
-    font-family:'IBM Plex Mono',monospace; font-size:11px;
+    font-family:'IBM Plex Mono',monospace !important; font-size:11px;
     text-transform:uppercase; letter-spacing:1px; color: var(--text-secondary);
 }}
 div[data-testid="metric-container"] > div:nth-child(2) {{
-    font-family:'Syne',sans-serif; font-weight:700; font-size:20px; color: var(--text-primary);
+    font-family:'Syne',sans-serif !important; font-weight:700; font-size:20px; color: var(--text-primary);
 }}
 
 .section-header {{
@@ -203,10 +214,18 @@ div[data-testid="metric-container"] > div:nth-child(2) {{
     padding:8px 14px; font-size:12px; color:#92400e; margin-bottom:10px;
 }}
 
-section[data-testid="stSidebar"] {{ background:#0d1117; border-right:1px solid #21262d; }}
-section[data-testid="stSidebar"] h3, section[data-testid="stSidebar"] label,
-section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] span,
-section[data-testid="stSidebar"] div {{ color:#e6edf3 !important; font-family:'IBM Plex Mono',monospace !important; }}
+/* Sidebar styling: Styled cleanly with safe tag targeting to avoid breaking native elements */
+section[data-testid="stSidebar"] {{ 
+    background:#0d1117 !important; 
+    border-right:1px solid #21262d !important; 
+}}
+section[data-testid="stSidebar"] h3, 
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] p, 
+section[data-testid="stSidebar"] .stMarkdown span {{ 
+    color:#e6edf3 !important; 
+    font-family:'IBM Plex Mono',monospace !important; 
+}}
 section[data-testid="stSidebar"] .stSelectbox>div>div {{ background:#161b22; border:1px solid #30363d; }}
 section[data-testid="stSidebar"] button {{ transition: transform .15s ease, box-shadow .15s ease; }}
 section[data-testid="stSidebar"] button:hover {{ transform: translateY(-1px); box-shadow:0 4px 14px rgba(37,99,235,.25); }}
@@ -255,11 +274,7 @@ section[data-testid="stSidebar"] button:hover {{ transform: translateY(-1px); bo
 .strat-info.reversion {{ border-color:#f9a8d4; border-left-color:#ec4899; background:linear-gradient(135deg,#fdf2f8,#fce7f3); }}
 .strat-info.breakout  {{ border-color:#fcd34d; border-left-color:#d97706; background:linear-gradient(135deg,#fffbeb,#fef3c7); }}
 
-/* ── MOBILE RESPONSIVENESS ──────────────────────────────────
-   Streamlit's st.columns() doesn't reflow on its own — it just
-   squeezes columns until they're unreadable. These rules force
-   the underlying flex containers to wrap into a proper 2-col /
-   1-col stacked grid below common phone/tablet breakpoints. */
+/* ── MOBILE RESPONSIVENESS ────────────────────────────────── */
 @media (max-width: 900px) {{
     div[data-testid="stHorizontalBlock"] {{ flex-wrap: wrap !important; gap: 10px !important; }}
     div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {{
@@ -846,9 +861,7 @@ def main():
     with st.sidebar:
         st.markdown("<h3 style='color:#58a6ff;font-family:Syne,sans-serif;font-size:18px'>⚙️ Terminal</h3>", unsafe_allow_html=True)
 
-        # Appearance controls — read at the top of the script (before CSS is
-        # built) via session_state, so changing either takes effect on the
-        # very next rerun. See _THEME / _MOBILE near the top of the file.
+        # Appearance controls
         ac1, ac2 = st.columns(2)
         with ac1:
             st.radio("Theme", ["Light", "Dark"], horizontal=True, key="theme_choice", label_visibility="collapsed")
@@ -872,9 +885,7 @@ def main():
         strategy_name = st.selectbox("🧠 Algorithm", [AUTO_LABEL] + list(STRATEGIES.keys()))
         is_auto_mode  = (strategy_name == AUTO_LABEL)
 
-        # Strategy info card — in Auto mode the actual strategy isn't known
-        # until live data + regime classification runs below, so we show a
-        # placeholder here and the resolved badge/reason near the chart header.
+        # Strategy info card
         if is_auto_mode:
             strategy = None
             st.markdown(
@@ -934,9 +945,6 @@ def main():
         st.stop()
 
     # ── AUTO REGIME ROUTER ───────────────────
-    # Resolve which strategy to run *before* indicators are applied below.
-    # Hysteresis is kept per (region, asset, timeframe) across reruns via
-    # session_state, so the router won't whipsaw across the ADX 20-25 zone.
     regime_info = None
     if is_auto_mode:
         regime_state_key = f"auto_regime::{region}::{asset_name}::{timeframe}"
@@ -990,7 +998,6 @@ def main():
     if 'EMA_200' in df.columns and not pd.isna(curr.get('EMA_200', float('nan'))):
         active_trend = "BULLISH 🟢" if curr['Close']>curr['EMA_200'] else "BEARISH 🔴"
     elif 'DC_HIGH' in df.columns:
-        # For strategies without 200 EMA, use HTF bias as proxy
         active_trend = "BULLISH 🟢" if htf_bias==1 else "BEARISH 🔴" if htf_bias==-1 else "NEUTRAL ⚪"
 
     latest_signal = int(curr['Signal'])
@@ -1004,7 +1011,7 @@ def main():
         if not any(pd.isna(v) for v in [e9,e21,e200]):
             base_bias = 1 if e9>e21 and curr['Close']>e200 else (-1 if e9<e21 and curr['Close']<e200 else 0)
     else:
-        base_bias = htf_bias  # Fall back to HTF for strategies without 200 EMA
+        base_bias = htf_bias
 
     risk_data = compute_risk(capital_inr, risk_pct, current_atr, lot_size, float(curr['Close']))
     lots      = risk_data['lots']
@@ -1078,9 +1085,6 @@ def main():
     if daily_interval != htf_interval: tf_biases[daily_interval] = daily_bias
     st.markdown(render_matrix(tf_biases), unsafe_allow_html=True)
 
-    # Regime warnings specific to each strategy — only meaningful in manual
-    # mode. In Auto mode the router already picked the strategy that fits
-    # the current regime, so these would just contradict the badge above.
     if not is_auto_mode:
         if isinstance(strategy, TrendConfluence) and regime == "choppy":
             adx_v = f"{current_adx:.1f}" if current_adx else "N/A"
@@ -1158,7 +1162,6 @@ def main():
     fig = make_subplots(rows=n_rows, cols=1, shared_xaxes=True, row_heights=heights,
                         vertical_spacing=0.03, subplot_titles=titles)
 
-    # Candlestick
     fig.add_trace(go.Candlestick(
         x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
         name='Price (INR)',
@@ -1166,14 +1169,11 @@ def main():
         decreasing_line_color='#F23645', decreasing_fillcolor='#F23645'
     ), row=1, col=1)
 
-    # Strategy-specific overlays (dynamic — changes per selection)
     strategy.add_chart_overlays(fig, df, row=1)
 
-    # Chandelier trail
     if show_chandelier and not chan_series.empty:
         draw_chandelier(fig, chan_series, df, row=1)
 
-    # Signal markers
     bulls = df[df['Signal']== 1]
     bears = df[df['Signal']==-1]
     if not bulls.empty:
@@ -1189,7 +1189,6 @@ def main():
             marker=dict(symbol='triangle-down', color='#F23645', size=14, line=dict(width=1.5,color='white'))
         ), row=1, col=1)
 
-    # Dual-TP zones for last signal
     sig_series = df['Signal']
     nz = sig_series[sig_series!=0]
     if not nz.empty and current_atr>0:
