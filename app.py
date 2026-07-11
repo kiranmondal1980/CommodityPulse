@@ -1,5 +1,5 @@
 """
-CommodityPulse Pro — Phase 4 (Triple Strategy Engine)
+CommodityPulse Pro — Phase 5 (Auto Regime-Adaptive Strategy Router)
 ======================================================
 Strategies:
   1. Trend Confluence   — EMA 9/21/200 + RSI  (trending markets)
@@ -21,6 +21,7 @@ import requests, os, time, math
 from abc import ABC, abstractmethod
 from datetime import datetime
 import pytz
+from regime_engine import compute_regime_probe, classify_regime
 
 # ─────────────────────────────────────────────────────────────
 # PAGE CONFIG
@@ -510,6 +511,14 @@ STRATEGIES: dict[str, BaseStrategy] = {
     "Volatility Breakout (Donchian)":  VolatilityBreakoutDonchian(),
 }
 
+# Maps regime_engine's short strategy keys -> the display-name keys STRATEGIES uses here
+STRATEGY_KEY_MAP = {
+    "trend":     "Trend Confluence (MTF)",
+    "reversion": "Mean Reversion (Bollinger Fade)",
+    "breakout":  "Volatility Breakout (Donchian)",
+}
+AUTO_LABEL = "🤖 Auto (Regime-Adaptive)"
+
 # ─────────────────────────────────────────────────────────────
 # CHANDELIER EXIT (ATR-BASED TRAILING STOP)
 # ─────────────────────────────────────────────────────────────
@@ -710,7 +719,7 @@ def main():
     st.markdown(
         "<h1 style='margin-bottom:2px'>⚡ CommodityPulse <span style='color:#2563eb'>Pro</span></h1>"
         "<p style='color:#64748b;font-size:13px;font-family:IBM Plex Mono,monospace;margin-top:0'>"
-        "Phase 4 · Triple Strategy Engine · Smart Risk · Dual-TP · Live Backtest · Chandelier Trail · IST · INR</p>",
+        "Phase 5 · Auto Regime Router · Triple Strategy Engine · Smart Risk · Dual-TP · Live Backtest · IST · INR</p>",
         unsafe_allow_html=True)
 
     # ── SIDEBAR ─────────────────────────────
@@ -730,13 +739,29 @@ def main():
         timeframe  = st.selectbox("⏱️ Base Timeframe", list(TIMEFRAMES.keys()))
         st.divider()
 
-        strategy_name = st.selectbox("🧠 Algorithm", list(STRATEGIES.keys()))
-        strategy      = STRATEGIES[strategy_name]
+        strategy_name = st.selectbox("🧠 Algorithm", [AUTO_LABEL] + list(STRATEGIES.keys()))
+        is_auto_mode  = (strategy_name == AUTO_LABEL)
 
-        # Strategy info card
-        badge_html = f"<span class='strat-badge {strategy.badge_class}'>{strategy.name}</span>"
-        info_html  = f"<div class='strat-info {strategy.info_class}'>{strategy.description}</div>"
-        st.markdown(badge_html + info_html, unsafe_allow_html=True)
+        # Strategy info card — in Auto mode the actual strategy isn't known
+        # until live data + regime classification runs below, so we show a
+        # placeholder here and the resolved badge/reason near the chart header.
+        if is_auto_mode:
+            strategy = None
+            st.markdown(
+                "<div class='strat-info' style='border-left-color:#8b5cf6;"
+                "background:linear-gradient(135deg,#f5f3ff,#ede9fe)'>"
+                "🤖 <b>Auto Regime-Adaptive Mode</b><br>"
+                "Reads live ADX, Donchian breakout status, and volume every refresh to pick "
+                "the best-fit strategy: <b>Trend Confluence</b> (ADX ≥ 25), "
+                "<b>Mean Reversion</b> (ADX &lt; 20), or <b>Volatility Breakout</b> "
+                "(confirmed channel break + volume spike). The resolved strategy and "
+                "reasoning appear near the chart header once data loads."
+                "</div>", unsafe_allow_html=True)
+        else:
+            strategy = STRATEGIES[strategy_name]
+            badge_html = f"<span class='strat-badge {strategy.badge_class}'>{strategy.name}</span>"
+            info_html  = f"<div class='strat-info {strategy.info_class}'>{strategy.description}</div>"
+            st.markdown(badge_html + info_html, unsafe_allow_html=True)
         st.divider()
 
         st.markdown(
@@ -754,7 +779,8 @@ def main():
         st.divider()
         enable_alerts = st.toggle("🔔 Telegram Alerts", value=False)
         if st.button("🚀 Send Test Alert", use_container_width=True):
-            send_telegram(f"✅ CommodityPulse Pro Phase 4: [{strategy.name}] — System online. (IST)")
+            _test_name = "Auto (Regime-Adaptive)" if is_auto_mode else strategy.name
+            send_telegram(f"✅ CommodityPulse Pro Phase 5: [{_test_name}] — System online. (IST)")
             st.toast("Test alert sent!", icon="🚀")
 
         if "last_alert_time" not in st.session_state:
@@ -776,6 +802,20 @@ def main():
     if df is None or len(df) < 50:
         st.error("⚠️ Data unavailable after retries. Wait 60s and refresh.")
         st.stop()
+
+    # ── AUTO REGIME ROUTER ───────────────────
+    # Resolve which strategy to run *before* indicators are applied below.
+    # Hysteresis is kept per (region, asset, timeframe) across reruns via
+    # session_state, so the router won't whipsaw across the ADX 20-25 zone.
+    regime_info = None
+    if is_auto_mode:
+        regime_state_key = f"auto_regime::{region}::{asset_name}::{timeframe}"
+        prior_key   = st.session_state.get(regime_state_key)
+        probe_df    = compute_regime_probe(df)
+        regime_info = classify_regime(probe_df, prior_strategy_key=prior_key, confirmed_row=-1)
+        st.session_state[regime_state_key] = regime_info["strategy_key"]
+        strategy      = STRATEGIES[STRATEGY_KEY_MAP[regime_info["strategy_key"]]]
+        strategy_name = strategy.name
 
     htf_interval   = tf_params['higher']
     daily_interval = tf_params['daily']
@@ -865,9 +905,20 @@ def main():
         st.toast("Telegram Alert Sent!", icon="🚀")
 
     # ── STRATEGY BADGE ───────────────────────
+    badge_prefix = "🤖 Auto → " if is_auto_mode else "🧠 Active: "
     st.markdown(
-        f"<span class='strat-badge {strategy.badge_class}'>🧠 Active: {strategy.name}</span>",
+        f"<span class='strat-badge {strategy.badge_class}'>{badge_prefix}{strategy.name}</span>",
         unsafe_allow_html=True)
+
+    if regime_info:
+        adx_txt    = f"{regime_info['adx']:.1f}" if regime_info['adx'] is not None else "N/A"
+        conf       = regime_info['confidence']
+        conf_color = "#166534" if conf >= 60 else "#92400e" if conf >= 35 else "#991b1b"
+        st.markdown(
+            f"<div class='strat-info' style='border-left-color:{conf_color};margin-top:8px'>"
+            f"<b>Regime Detector:</b> {regime_info['regime']} · Confidence {conf}% · ADX {adx_txt}<br>"
+            f"{regime_info['reason']}</div>",
+            unsafe_allow_html=True)
 
     # ── MARKET DATA METRICS ──────────────────
     st.markdown("<br>", unsafe_allow_html=True)
@@ -897,16 +948,19 @@ def main():
     if daily_interval != htf_interval: tf_biases[daily_interval] = daily_bias
     st.markdown(render_matrix(tf_biases), unsafe_allow_html=True)
 
-    # Regime warnings specific to each strategy
-    if isinstance(strategy, TrendConfluence) and regime == "choppy":
-        adx_v = f"{current_adx:.1f}" if current_adx else "N/A"
-        st.warning(f"⚠️ ADX={adx_v} — CHOPPY market. Trend Confluence signals are unreliable. Wait for ADX > 20.", icon="⚠️")
-    elif isinstance(strategy, MeanReversionBollinger) and regime == "trending":
-        adx_v = f"{current_adx:.1f}" if current_adx else "N/A"
-        st.info(f"ℹ️ ADX={adx_v} — TRENDING market. Mean Reversion works best when ADX < 20. Consider switching to Trend Confluence.", icon="ℹ️")
-    elif isinstance(strategy, VolatilityBreakoutDonchian) and regime == "choppy":
-        adx_v = f"{current_adx:.1f}" if current_adx else "N/A"
-        st.warning(f"⚠️ ADX={adx_v} — CHOPPY market. Breakout signals require ADX > 25 + Volume spike. Waiting…", icon="⚠️")
+    # Regime warnings specific to each strategy — only meaningful in manual
+    # mode. In Auto mode the router already picked the strategy that fits
+    # the current regime, so these would just contradict the badge above.
+    if not is_auto_mode:
+        if isinstance(strategy, TrendConfluence) and regime == "choppy":
+            adx_v = f"{current_adx:.1f}" if current_adx else "N/A"
+            st.warning(f"⚠️ ADX={adx_v} — CHOPPY market. Trend Confluence signals are unreliable. Wait for ADX > 20.", icon="⚠️")
+        elif isinstance(strategy, MeanReversionBollinger) and regime == "trending":
+            adx_v = f"{current_adx:.1f}" if current_adx else "N/A"
+            st.info(f"ℹ️ ADX={adx_v} — TRENDING market. Mean Reversion works best when ADX < 20. Consider switching to Trend Confluence.", icon="ℹ️")
+        elif isinstance(strategy, VolatilityBreakoutDonchian) and regime == "choppy":
+            adx_v = f"{current_adx:.1f}" if current_adx else "N/A"
+            st.warning(f"⚠️ ADX={adx_v} — CHOPPY market. Breakout signals require ADX > 25 + Volume spike. Waiting…", icon="⚠️")
 
     with st.expander("🔭 Multi-Timeframe Detail", expanded=False):
         d1,d2,d3 = st.columns(3)
@@ -1128,7 +1182,7 @@ def main():
 
     st.markdown(
         "<br><p style='text-align:center;color:#94a3b8;font-size:11px;font-family:IBM Plex Mono,monospace'>"
-        "CommodityPulse Pro · Phase 4 · Triple Strategy Engine · IST · INR · Not Financial Advice</p>",
+        "CommodityPulse Pro · Phase 5 · Auto Regime Router · IST · INR · Not Financial Advice</p>",
         unsafe_allow_html=True)
 
 
