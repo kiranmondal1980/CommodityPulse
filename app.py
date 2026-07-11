@@ -33,139 +33,244 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.markdown("""
+# ── THEME STATE (read BEFORE the CSS is built, so a toggle click on the
+#    previous rerun is already reflected in session_state by the time this
+#    script runs top-to-bottom again — standard Streamlit theming pattern) ──
+if "theme_choice" not in st.session_state:
+    st.session_state.theme_choice = "Light"
+if "compact_mobile" not in st.session_state:
+    st.session_state.compact_mobile = False
+
+_THEME = st.session_state.theme_choice
+_MOBILE = st.session_state.compact_mobile
+
+# Brand constants — stay fixed across both themes (this is the one thing
+# that should never change: the blue/teal/red signal palette IS the brand).
+ACCENT   = "#2563eb"
+ACCENT_2 = "#7c3aed"
+SUCCESS  = "#089981"
+DANGER   = "#F23645"
+WARNING  = "#f59e0b"
+
+if _THEME == "Dark":
+    PALETTE = dict(
+        bg_page="#0b0f17", bg_card="#11151d", bg_card_alt="#161b22", bg_hover="#1c2128",
+        border="#21262d", border_strong="#30363d",
+        text_primary="#e6edf3", text_secondary="#9aa7b8", text_muted="#6b7686",
+        shadow="rgba(0,0,0,.45)", chip_shadow="rgba(37,99,235,.18)",
+        plot_bg="#11151d", plot_grid="#1c2128", plot_font="#9aa7b8", plot_template="plotly_dark",
+    )
+else:
+    PALETTE = dict(
+        bg_page="#ffffff", bg_card="#ffffff", bg_card_alt="#f8faff", bg_hover="#eef2ff",
+        border="#e2e8f0", border_strong="#cbd5e1",
+        text_primary="#0d1117", text_secondary="#64748b", text_muted="#94a3b8",
+        shadow="rgba(15,23,42,.06)", chip_shadow="rgba(37,99,235,.10)",
+        plot_bg="#ffffff", plot_grid="#f1f5f9", plot_font="#64748b", plot_template="plotly_white",
+    )
+
+CHART_HEIGHT = 480 if _MOBILE else 720
+CHART_MARGIN = dict(l=6, r=46, t=28, b=8) if _MOBILE else dict(l=16, r=90, t=32, b=16)
+ANNOT_FONT   = 8 if _MOBILE else 10
+
+st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Syne:wght@700;800&display=swap');
 
-html, body, [class*="css"] { font-family: 'IBM Plex Mono', monospace; }
-h1, h2, h3 { font-family: 'Syne', sans-serif; font-weight: 800; color: #0d1117; letter-spacing: -0.5px; }
+:root {{
+    --bg-page: {PALETTE['bg_page']};
+    --bg-card: {PALETTE['bg_card']};
+    --bg-card-alt: {PALETTE['bg_card_alt']};
+    --bg-hover: {PALETTE['bg_hover']};
+    --border: {PALETTE['border']};
+    --border-strong: {PALETTE['border_strong']};
+    --text-primary: {PALETTE['text_primary']};
+    --text-secondary: {PALETTE['text_secondary']};
+    --text-muted: {PALETTE['text_muted']};
+    --shadow: {PALETTE['shadow']};
+    --chip-shadow: {PALETTE['chip_shadow']};
+    --accent: {ACCENT};
+    --accent-2: {ACCENT_2};
+    --success: {SUCCESS};
+    --danger: {DANGER};
+    --warning: {WARNING};
+}}
 
-div[data-testid="metric-container"] {
-    background: linear-gradient(135deg,#ffffff,#f8faff);
-    border: 1px solid #e2e8f0; border-left: 4px solid #2563eb;
+html, body, [class*="css"] {{ font-family: 'IBM Plex Mono', monospace; }}
+.stApp {{ background: var(--bg-page); }}
+h1, h2, h3 {{ font-family: 'Syne', sans-serif; font-weight: 800; color: var(--text-primary); letter-spacing: -0.5px; }}
+p, span, label, div {{ color: var(--text-primary); }}
+hr {{ border-color: var(--border) !important; }}
+::selection {{ background: var(--accent); color: #fff; }}
+
+/* Header signature — thin gradient signal-line under the title */
+.cp-header-rule {{
+    height:3px; width:100%; margin:6px 0 14px;
+    background:linear-gradient(90deg, var(--accent), var(--accent-2), var(--success));
+    border-radius:2px; opacity:.85;
+}}
+
+div[data-testid="metric-container"] {{
+    background: linear-gradient(135deg, var(--bg-card), var(--bg-card-alt));
+    border: 1px solid var(--border); border-left: 4px solid var(--accent);
     padding: 14px 18px; border-radius: 12px;
-    box-shadow: 0 2px 12px rgba(37,99,235,.06);
-    transition: transform .2s, box-shadow .2s;
-}
-div[data-testid="metric-container"]:hover {
-    transform: translateY(-3px); box-shadow: 0 6px 20px rgba(37,99,235,.12);
-}
-div[data-testid="metric-container"] > div:first-child {
+    box-shadow: 0 2px 12px var(--chip-shadow);
+    transition: transform .18s ease, box-shadow .18s ease;
+}}
+div[data-testid="metric-container"]:hover {{
+    transform: translateY(-3px); box-shadow: 0 8px 22px var(--chip-shadow);
+}}
+div[data-testid="metric-container"] > div:first-child {{
     font-family:'IBM Plex Mono',monospace; font-size:11px;
-    text-transform:uppercase; letter-spacing:1px; color:#64748b;
-}
-div[data-testid="metric-container"] > div:nth-child(2) {
-    font-family:'Syne',sans-serif; font-weight:700; font-size:20px; color:#0d1117;
-}
+    text-transform:uppercase; letter-spacing:1px; color: var(--text-secondary);
+}}
+div[data-testid="metric-container"] > div:nth-child(2) {{
+    font-family:'Syne',sans-serif; font-weight:700; font-size:20px; color: var(--text-primary);
+}}
 
-.section-header {
+.section-header {{
     font-family:'Syne',sans-serif; font-size:13px; font-weight:700;
-    text-transform:uppercase; letter-spacing:2px; color:#64748b;
-    border-bottom:1px solid #e2e8f0; padding-bottom:6px; margin:20px 0 12px;
-}
-.section-header.accent { color:#2563eb; border-color:#bfdbfe; }
+    text-transform:uppercase; letter-spacing:2px; color: var(--text-secondary);
+    border-bottom:1px solid var(--border); padding-bottom:6px; margin:20px 0 12px;
+}}
+.section-header.accent {{ color: var(--accent); border-color: var(--accent); border-bottom-width:2px; }}
 
 /* Strategy Badge */
-.strat-badge {
+.strat-badge {{
     display:inline-block; border-radius:8px; padding:6px 14px;
     font-size:12px; font-weight:700; font-family:'IBM Plex Mono',monospace;
     letter-spacing:1px; margin-bottom:10px;
-}
-.strat-badge.trend { background:#dbeafe; color:#1e40af; border:1px solid #93c5fd; }
-.strat-badge.reversion { background:#fce7f3; color:#9d174d; border:1px solid #f9a8d4; }
-.strat-badge.breakout { background:#fef3c7; color:#92400e; border:1px solid #fcd34d; }
+}}
+.strat-badge.trend     {{ background:#dbeafe; color:#1e40af; border:1px solid #93c5fd; }}
+.strat-badge.reversion {{ background:#fce7f3; color:#9d174d; border:1px solid #f9a8d4; }}
+.strat-badge.breakout  {{ background:#fef3c7; color:#92400e; border:1px solid #fcd34d; }}
 
 /* Confluence Matrix */
-.matrix-wrap {
+.matrix-wrap {{
     display:flex; gap:12px; align-items:stretch;
-    background:#f8faff; border:1px solid #e2e8f0;
+    background: var(--bg-card-alt); border:1px solid var(--border);
     border-radius:14px; padding:18px 22px; margin:12px 0; flex-wrap:wrap;
-}
-.matrix-cell {
+}}
+.matrix-cell {{
     flex:1; min-width:110px; border-radius:10px; padding:14px 16px;
     text-align:center; border:1px solid transparent; transition:transform .15s;
-}
-.matrix-cell:hover { transform:translateY(-2px); }
-.matrix-cell.bull { background:#dcfce7; border-color:#86efac; }
-.matrix-cell.bear { background:#fee2e2; border-color:#fca5a5; }
-.matrix-cell.neut { background:#f1f5f9; border-color:#cbd5e1; }
-.matrix-cell .tf-label { font-size:10px; letter-spacing:1.5px; text-transform:uppercase; color:#64748b; margin-bottom:6px; }
-.matrix-cell .tf-icon  { font-size:24px; margin:4px 0; }
-.matrix-cell .tf-text  { font-size:11px; font-weight:700; letter-spacing:.5px; }
-.matrix-cell.bull .tf-text { color:#166534; }
-.matrix-cell.bear .tf-text { color:#991b1b; }
-.matrix-cell.neut .tf-text { color:#475569; }
+}}
+.matrix-cell:hover {{ transform:translateY(-2px); }}
+.matrix-cell.bull {{ background:#dcfce7; border-color:#86efac; }}
+.matrix-cell.bear {{ background:#fee2e2; border-color:#fca5a5; }}
+.matrix-cell.neut {{ background:#f1f5f9; border-color:#cbd5e1; }}
+.matrix-cell .tf-label {{ font-size:10px; letter-spacing:1.5px; text-transform:uppercase; color:#64748b; margin-bottom:6px; }}
+.matrix-cell .tf-icon  {{ font-size:24px; margin:4px 0; }}
+.matrix-cell .tf-text  {{ font-size:11px; font-weight:700; letter-spacing:.5px; }}
+.matrix-cell.bull .tf-text {{ color:#166534; }}
+.matrix-cell.bear .tf-text {{ color:#991b1b; }}
+.matrix-cell.neut .tf-text {{ color:#475569; }}
 
-.verdict-strong-buy  { background:#166534; color:#dcfce7; border-radius:8px; padding:10px 18px; font-weight:700; font-size:13px; letter-spacing:1px; display:inline-block; }
-.verdict-strong-sell { background:#991b1b; color:#fee2e2; border-radius:8px; padding:10px 18px; font-weight:700; font-size:13px; letter-spacing:1px; display:inline-block; }
-.verdict-caution     { background:#78350f; color:#fef9c3; border-radius:8px; padding:10px 18px; font-weight:700; font-size:13px; letter-spacing:1px; display:inline-block; }
-.verdict-neutral     { background:#334155; color:#e2e8f0; border-radius:8px; padding:10px 18px; font-weight:700; font-size:13px; letter-spacing:1px; display:inline-block; }
+.verdict-strong-buy  {{ background:#166534; color:#dcfce7; border-radius:8px; padding:10px 18px; font-weight:700; font-size:13px; letter-spacing:1px; display:inline-block; }}
+.verdict-strong-sell {{ background:#991b1b; color:#fee2e2; border-radius:8px; padding:10px 18px; font-weight:700; font-size:13px; letter-spacing:1px; display:inline-block; }}
+.verdict-caution     {{ background:#78350f; color:#fef9c3; border-radius:8px; padding:10px 18px; font-weight:700; font-size:13px; letter-spacing:1px; display:inline-block; }}
+.verdict-neutral     {{ background:#334155; color:#e2e8f0; border-radius:8px; padding:10px 18px; font-weight:700; font-size:13px; letter-spacing:1px; display:inline-block; }}
 
-.mkt-open   { background:#dcfce7; color:#166534; border:1px solid #86efac; border-radius:20px; padding:5px 14px; font-size:12px; font-weight:700; display:inline-block; }
-.mkt-closed { background:#fee2e2; color:#991b1b; border:1px solid #fca5a5; border-radius:20px; padding:5px 14px; font-size:12px; font-weight:700; display:inline-block; }
-.mkt-pre    { background:#fef9c3; color:#92400e; border:1px solid #fde68a; border-radius:20px; padding:5px 14px; font-size:12px; font-weight:700; display:inline-block; }
+.mkt-open   {{ background:#dcfce7; color:#166534; border:1px solid #86efac; border-radius:20px; padding:5px 14px; font-size:12px; font-weight:700; display:inline-flex; align-items:center; gap:7px; }}
+.mkt-closed {{ background:#fee2e2; color:#991b1b; border:1px solid #fca5a5; border-radius:20px; padding:5px 14px; font-size:12px; font-weight:700; display:inline-block; }}
+.mkt-pre    {{ background:#fef9c3; color:#92400e; border:1px solid #fde68a; border-radius:20px; padding:5px 14px; font-size:12px; font-weight:700; display:inline-block; }}
 
-.fallback-banner {
+/* Live pulse dot — the one signature motion moment, reserved for "MCX OPEN" */
+.pulse-dot {{
+    width:8px; height:8px; border-radius:50%; background:#166534;
+    box-shadow:0 0 0 0 rgba(22,101,52,.55);
+    animation: pulse 1.8s infinite;
+}}
+@keyframes pulse {{
+    0%   {{ box-shadow:0 0 0 0 rgba(22,101,52,.55); }}
+    70%  {{ box-shadow:0 0 0 8px rgba(22,101,52,0); }}
+    100% {{ box-shadow:0 0 0 0 rgba(22,101,52,0); }}
+}}
+@media (prefers-reduced-motion: reduce) {{ .pulse-dot {{ animation:none; }} }}
+
+.fallback-banner {{
     background:#fef3c7; border:1px solid #f59e0b; border-radius:8px;
     padding:8px 14px; font-size:12px; color:#92400e; margin-bottom:10px;
-}
+}}
 
-section[data-testid="stSidebar"] { background:#0d1117; border-right:1px solid #21262d; }
+section[data-testid="stSidebar"] {{ background:#0d1117; border-right:1px solid #21262d; }}
 section[data-testid="stSidebar"] h3, section[data-testid="stSidebar"] label,
 section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] span,
-section[data-testid="stSidebar"] div { color:#e6edf3 !important; font-family:'IBM Plex Mono',monospace !important; }
-section[data-testid="stSidebar"] .stSelectbox>div>div { background:#161b22; border:1px solid #30363d; }
+section[data-testid="stSidebar"] div {{ color:#e6edf3 !important; font-family:'IBM Plex Mono',monospace !important; }}
+section[data-testid="stSidebar"] .stSelectbox>div>div {{ background:#161b22; border:1px solid #30363d; }}
+section[data-testid="stSidebar"] button {{ transition: transform .15s ease, box-shadow .15s ease; }}
+section[data-testid="stSidebar"] button:hover {{ transform: translateY(-1px); box-shadow:0 4px 14px rgba(37,99,235,.25); }}
 
-.dark-card {
+.dark-card {{
     background:linear-gradient(135deg,#0d1117,#161b22);
     border:1px solid #30363d; border-radius:12px; padding:20px 24px; margin-top:8px;
-}
-.dark-card h4 { color:#58a6ff; margin:0 0 12px 0; font-family:'Syne',sans-serif; font-size:15px; }
-.drow { display:flex; justify-content:space-between; border-bottom:1px solid #21262d; padding:8px 0; font-size:13px; }
-.drow:last-child { border-bottom:none; }
-.dlabel { color:#8b949e; }
-.dval   { color:#e6edf3; font-weight:600; }
-.dval.g { color:#3fb950; } .dval.r { color:#f85149; } .dval.b { color:#58a6ff; } .dval.a { color:#f59e0b; }
+    box-shadow: 0 4px 18px var(--shadow);
+}}
+.dark-card h4 {{ color:#58a6ff; margin:0 0 12px 0; font-family:'Syne',sans-serif; font-size:15px; }}
+.drow {{ display:flex; justify-content:space-between; border-bottom:1px solid #21262d; padding:8px 0; font-size:13px; }}
+.drow:last-child {{ border-bottom:none; }}
+.dlabel {{ color:#8b949e; }}
+.dval   {{ color:#e6edf3; font-weight:600; }}
+.dval.g {{ color:#3fb950; }} .dval.r {{ color:#f85149; }} .dval.b {{ color:#58a6ff; }} .dval.a {{ color:#f59e0b; }}
 
-.risk-pill {
+.risk-pill {{
     display:inline-block; border-radius:20px; padding:4px 14px;
     font-size:12px; font-weight:700; font-family:'IBM Plex Mono',monospace;
-}
-.risk-pill.safe   { background:#dcfce7; color:#166534; border:1px solid #86efac; }
-.risk-pill.medium { background:#fef9c3; color:#92400e; border:1px solid #fde68a; }
-.risk-pill.danger { background:#fee2e2; color:#991b1b; border:1px solid #fca5a5; }
+}}
+.risk-pill.safe   {{ background:#dcfce7; color:#166534; border:1px solid #86efac; }}
+.risk-pill.medium {{ background:#fef9c3; color:#92400e; border:1px solid #fde68a; }}
+.risk-pill.danger {{ background:#fee2e2; color:#991b1b; border:1px solid #fca5a5; }}
 
-.bt-grid {
+.bt-grid {{
     display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:12px 0;
-}
-.bt-card {
-    background:#fff; border:1px solid #e2e8f0; border-radius:10px;
-    padding:16px; text-align:center; box-shadow:0 2px 8px rgba(0,0,0,.04);
-}
-.bt-card .bt-val { font-family:'Syne',sans-serif; font-size:26px; font-weight:800; color:#0d1117; }
-.bt-card .bt-val.g { color:#089981; } .bt-card .bt-val.r { color:#F23645; }
-.bt-card .bt-label { font-size:10px; letter-spacing:1px; text-transform:uppercase; color:#64748b; margin-top:4px; }
-.bt-card .bt-sub   { font-size:11px; color:#94a3b8; margin-top:2px; }
+}}
+.bt-card {{
+    background: var(--bg-card); border:1px solid var(--border); border-radius:10px;
+    padding:16px; text-align:center; box-shadow:0 2px 8px var(--shadow);
+    transition: transform .15s ease;
+}}
+.bt-card:hover {{ transform: translateY(-2px); }}
+.bt-card .bt-val {{ font-family:'Syne',sans-serif; font-size:26px; font-weight:800; color: var(--text-primary); }}
+.bt-card .bt-val.g {{ color:#089981; }} .bt-card .bt-val.r {{ color:#F23645; }}
+.bt-card .bt-label {{ font-size:10px; letter-spacing:1px; text-transform:uppercase; color: var(--text-secondary); margin-top:4px; }}
+.bt-card .bt-sub   {{ font-size:11px; color: var(--text-muted); margin-top:2px; }}
 
 /* Strategy info box */
-.strat-info {
+.strat-info {{
     background:linear-gradient(135deg,#f8faff,#eff6ff);
     border:1px solid #bfdbfe; border-left:4px solid #2563eb;
-    border-radius:10px; padding:14px 18px; margin:10px 0; font-size:12px;
-}
-.strat-info.reversion { border-color:#f9a8d4; border-left-color:#ec4899; background:linear-gradient(135deg,#fdf2f8,#fce7f3); }
-.strat-info.breakout  { border-color:#fcd34d; border-left-color:#d97706; background:linear-gradient(135deg,#fffbeb,#fef3c7); }
+    border-radius:10px; padding:14px 18px; margin:10px 0; font-size:12px; color:#0d1117;
+}}
+.strat-info * {{ color:#0d1117; }}
+.strat-info.reversion {{ border-color:#f9a8d4; border-left-color:#ec4899; background:linear-gradient(135deg,#fdf2f8,#fce7f3); }}
+.strat-info.breakout  {{ border-color:#fcd34d; border-left-color:#d97706; background:linear-gradient(135deg,#fffbeb,#fef3c7); }}
 
-@media (max-width: 768px) {
-    .bt-grid { grid-template-columns: repeat(2, 1fr); }
-    .matrix-cell { min-width: 45%; }
-}
-@media (max-width: 480px) {
-    .bt-grid { grid-template-columns: 1fr; }
-    .matrix-cell { min-width: 100%; }
-}
+/* ── MOBILE RESPONSIVENESS ──────────────────────────────────
+   Streamlit's st.columns() doesn't reflow on its own — it just
+   squeezes columns until they're unreadable. These rules force
+   the underlying flex containers to wrap into a proper 2-col /
+   1-col stacked grid below common phone/tablet breakpoints. */
+@media (max-width: 900px) {{
+    div[data-testid="stHorizontalBlock"] {{ flex-wrap: wrap !important; gap: 10px !important; }}
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {{
+        min-width: 46% !important; flex: 1 1 46% !important;
+    }}
+    .bt-grid {{ grid-template-columns: repeat(2, 1fr); }}
+    .matrix-cell {{ min-width: 45%; }}
+    h1 {{ font-size: 26px !important; }}
+}}
+@media (max-width: 480px) {{
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {{
+        min-width: 100% !important; flex: 1 1 100% !important;
+    }}
+    .bt-grid {{ grid-template-columns: 1fr; }}
+    .matrix-cell {{ min-width: 100%; }}
+    .dark-card {{ padding:14px 16px; }}
+    h1 {{ font-size: 21px !important; }}
+    div[data-testid="metric-container"] > div:nth-child(2) {{ font-size:17px; }}
+}}
 
-#MainMenu { visibility:hidden; } footer { visibility:hidden; }
+#MainMenu {{ visibility:hidden; }} footer {{ visibility:hidden; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -664,6 +769,7 @@ def draw_dual_tp_zones(fig, df, last_sig_idx, signal, sl, tp1, tp2, row=1):
     entry = float(df.iloc[last_sig_idx]['Close'])
     x0    = df.index[last_sig_idx]
     x1    = df.index[min(last_sig_idx + 25, len(df)-1)]
+    annot_bg = "rgba(17,21,29,.90)" if _THEME == "Dark" else "rgba(255,255,255,.92)"
     zones = [
         (min(entry,sl),  max(entry,sl),  "rgba(248,81,73,.10)",  "rgba(248,81,73,.7)", f"  SL ₹{sl:,.0f}",               "#f85149"),
         (min(entry,tp1), max(entry,tp1), "rgba(16,185,129,.12)", "rgba(16,185,129,.7)",f"  TP1 ₹{tp1:,.0f}  (1.5R — Conservative)", "#10b981"),
@@ -671,9 +777,9 @@ def draw_dual_tp_zones(fig, df, last_sig_idx, signal, sl, tp1, tp2, row=1):
     ]
     for y0, y1, fill, lc, label, fc in zones:
         fig.add_shape(type="rect", x0=x0, x1=x1, y0=y0, y1=y1, fillcolor=fill, line=dict(color=lc,width=1.5,dash="dot"), layer="below", row=row, col=1)
-        fig.add_annotation(x=x1, y=(y0+y1)/2, text=label, showarrow=False, font=dict(color=fc,size=10,family="IBM Plex Mono"), xanchor="left", bgcolor="rgba(255,255,255,.92)", row=row, col=1)
+        fig.add_annotation(x=x1, y=(y0+y1)/2, text=label, showarrow=False, font=dict(color=fc,size=ANNOT_FONT,family="IBM Plex Mono"), xanchor="left", bgcolor=annot_bg, row=row, col=1)
     fig.add_shape(type="line", x0=x0, x1=x1, y0=entry, y1=entry, line=dict(color="#58a6ff",width=1.5,dash="dash"), row=row, col=1)
-    fig.add_annotation(x=x1, y=entry, text=f"  Entry ₹{entry:,.0f}", showarrow=False, font=dict(color="#58a6ff",size=10,family="IBM Plex Mono"), xanchor="left", bgcolor="rgba(255,255,255,.92)", row=row, col=1)
+    fig.add_annotation(x=x1, y=entry, text=f"  Entry ₹{entry:,.0f}", showarrow=False, font=dict(color="#58a6ff",size=ANNOT_FONT,family="IBM Plex Mono"), xanchor="left", bgcolor=annot_bg, row=row, col=1)
 
 def draw_chandelier(fig, chan_series, df, row=1):
     valid = chan_series.dropna()
@@ -684,19 +790,22 @@ def add_session_highlight(fig, df):
     today = datetime.now(IST).date()
     sess  = df[df.index.date == today]
     if sess.empty: return
-    fig.add_vrect(x0=sess.index[0], x1=sess.index[-1], fillcolor="rgba(37,99,235,.04)", layer="below", line_width=0, annotation_text="Today's Session", annotation_position="top left", annotation_font=dict(size=10,color="#2563eb",family="IBM Plex Mono"))
+    fig.add_vrect(x0=sess.index[0], x1=sess.index[-1], fillcolor="rgba(37,99,235,.06)" if _THEME=="Dark" else "rgba(37,99,235,.04)",
+                  layer="below", line_width=0, annotation_text="Today's Session", annotation_position="top left",
+                  annotation_font=dict(size=ANNOT_FONT,color="#2563eb",family="IBM Plex Mono"))
 
 def add_adx_panel(fig, df, adx_col, row=2):
     if not adx_col or adx_col not in df.columns: return
     s = df[adx_col].dropna()
     if s.empty: return
+    annot_bg = "rgba(17,21,29,.90)" if _THEME == "Dark" else "rgba(255,255,255,.92)"
     fig.add_trace(go.Scatter(x=df.index, y=df[adx_col], name='ADX', line=dict(color='#a78bfa',width=2), fill='tozeroy', fillcolor='rgba(167,139,250,.07)'), row=row, col=1)
     for level, color, dash in [(20,'#f59e0b','dash'),(25,'#3b82f6','dash'),(40,'#3fb950','dot')]:
         fig.add_shape(type="line", x0=df.index[0], x1=df.index[-1], y0=level, y1=level, line=dict(color=color,width=1,dash=dash), row=row, col=1)
     latest = float(s.iloc[-1])
     lbl = f"ADX {latest:.1f} · {'TRENDING' if latest>=25 else 'WEAKLY TRENDING' if latest>=20 else 'CHOPPY'}"
     clr = "#3fb950" if latest>=25 else "#3b82f6" if latest>=20 else "#f59e0b"
-    fig.add_annotation(x=df.index[-1], y=latest, text=f"  {lbl}", showarrow=False, font=dict(color=clr,size=11,family="IBM Plex Mono"), xanchor="left", bgcolor="rgba(255,255,255,.92)", bordercolor=clr, borderwidth=1, borderpad=4, row=row, col=1)
+    fig.add_annotation(x=df.index[-1], y=latest, text=f"  {lbl}", showarrow=False, font=dict(color=clr,size=ANNOT_FONT+1,family="IBM Plex Mono"), xanchor="left", bgcolor=annot_bg, bordercolor=clr, borderwidth=1, borderpad=4, row=row, col=1)
 
 def add_volume_panel(fig, df, row=3):
     if 'Volume' not in df.columns or df['Volume'].sum()==0: return
@@ -719,16 +828,27 @@ def main():
     st.markdown(
         "<h1 style='margin-bottom:2px'>⚡ CommodityPulse <span style='color:#2563eb'>Pro</span></h1>"
         "<p style='color:#64748b;font-size:13px;font-family:IBM Plex Mono,monospace;margin-top:0'>"
-        "Phase 5 · Auto Regime Router · Triple Strategy Engine · Smart Risk · Dual-TP · Live Backtest · IST · INR</p>",
+        "Phase 5 · Auto Regime Router · Triple Strategy Engine · Smart Risk · Dual-TP · Live Backtest · IST · INR</p>"
+        "<div class='cp-header-rule'></div>",
         unsafe_allow_html=True)
 
     # ── SIDEBAR ─────────────────────────────
     with st.sidebar:
         st.markdown("<h3 style='color:#58a6ff;font-family:Syne,sans-serif;font-size:18px'>⚙️ Terminal</h3>", unsafe_allow_html=True)
 
+        # Appearance controls — read at the top of the script (before CSS is
+        # built) via session_state, so changing either takes effect on the
+        # very next rerun. See _THEME / _MOBILE near the top of the file.
+        ac1, ac2 = st.columns(2)
+        with ac1:
+            st.radio("Theme", ["Light", "Dark"], horizontal=True, key="theme_choice", label_visibility="collapsed")
+        with ac2:
+            st.toggle("📱 Compact", key="compact_mobile", help="Shorter chart + tighter margins for small screens")
+        st.divider()
+
         mkt_status, now_ist = get_market_status()
         ts = now_ist.strftime('%H:%M IST')
-        badge = (f"<span class='mkt-open'>🟢 MCX OPEN · {ts}</span>"   if mkt_status=="open"  else
+        badge = (f"<span class='mkt-open'><span class='pulse-dot'></span> MCX OPEN · {ts}</span>" if mkt_status=="open"  else
                  f"<span class='mkt-pre'>🟡 PRE-MARKET · {ts}</span>"  if mkt_status=="pre"   else
                  f"<span class='mkt-closed'>🔴 MCX CLOSED · {ts}</span>")
         st.markdown(badge, unsafe_allow_html=True)
@@ -1074,20 +1194,21 @@ def main():
     add_adx_panel(fig, df, adx_col, row=2)
     if has_vol: add_volume_panel(fig, df, row=3)
 
+    legend_bg = "rgba(17,21,29,.85)" if _THEME == "Dark" else "rgba(255,255,255,.92)"
     fig.update_layout(
-        template="plotly_white", plot_bgcolor="#ffffff", paper_bgcolor="#ffffff",
-        height=820, margin=dict(l=20,r=120,t=40,b=20),
+        template=PALETTE['plot_template'], plot_bgcolor=PALETTE['plot_bg'], paper_bgcolor=PALETTE['plot_bg'],
+        height=CHART_HEIGHT, margin=CHART_MARGIN,
         xaxis_rangeslider_visible=False,
         legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1,
-                    bgcolor="rgba(255,255,255,.92)",font=dict(family="IBM Plex Mono",size=11)),
-        font=dict(family="IBM Plex Mono")
+                    bgcolor=legend_bg,font=dict(family="IBM Plex Mono",size=9 if _MOBILE else 11)),
+        font=dict(family="IBM Plex Mono", color=PALETTE['plot_font'])
     )
-    fig.update_yaxes(title_text="Price (₹)",tickprefix="₹",showgrid=True,gridcolor='#f1f5f9',row=1,col=1)
-    fig.update_yaxes(title_text="ADX",showgrid=True,gridcolor='#f1f5f9',title_font=dict(color="#a78bfa"),row=2,col=1)
-    if has_vol: fig.update_yaxes(title_text="Volume",showgrid=True,gridcolor='#f1f5f9',row=3,col=1)
-    fig.update_xaxes(title_text="Indian Standard Time (IST)",showgrid=True,gridcolor='#f1f5f9',
-                     title_font=dict(color="#64748b",size=11),row=n_rows,col=1)
-    st.plotly_chart(fig, use_container_width=True)
+    fig.update_yaxes(title_text="Price (₹)",tickprefix="₹",showgrid=True,gridcolor=PALETTE['plot_grid'],row=1,col=1)
+    fig.update_yaxes(title_text="ADX",showgrid=True,gridcolor=PALETTE['plot_grid'],title_font=dict(color="#a78bfa"),row=2,col=1)
+    if has_vol: fig.update_yaxes(title_text="Volume",showgrid=True,gridcolor=PALETTE['plot_grid'],row=3,col=1)
+    fig.update_xaxes(title_text="Indian Standard Time (IST)",showgrid=True,gridcolor=PALETTE['plot_grid'],
+                     title_font=dict(color=PALETTE['plot_font'],size=11),row=n_rows,col=1)
+    st.plotly_chart(fig, use_container_width=True, config={"responsive": True, "displaylogo": False})
 
     # ── LIVE BACKTEST ─────────────────────────
     st.markdown("<hr style='border:1px solid #e2e8f0;margin:24px 0 12px'>", unsafe_allow_html=True)
