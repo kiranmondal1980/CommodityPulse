@@ -1,5 +1,5 @@
 """
-CommodityPulse Pro — Phase 4 Enterprise Bot (main.py)
+CommodityPulse Pro — Phase 5 Enterprise Bot (main.py)
 ======================================================
 Background scanner for GitHub Actions / cron execution.
 
@@ -7,6 +7,11 @@ Strategies (set PARAMS["active_strategy"]):
   "trend"     → Trend Confluence   (EMA 9/21/200 + RSI, best for trending markets)
   "reversion" → Mean Reversion     (Bollinger Band Fade + RSI, best for sideways)
   "breakout"  → Volatility Breakout (Donchian Channels + ADX + Volume, best for explosive moves)
+  "auto"      → Regime-Adaptive Router (regime_engine.py) — classifies ADX +
+                Donchian breakout + volume every scan, per ticker, and picks
+                whichever of the three strategies above fits current conditions.
+                Choice persists across cron runs via regime_state.json so the
+                bot doesn't whipsaw across the ADX 20-25 transition zone.
 
 All prices in INR (₹) · All times in IST · MCX Calibrated (15% duty)
 Dual Take-Profit (1.5R / 3R) · ATR Stop-Loss · IST Market Hours Filter
@@ -25,6 +30,8 @@ import pytz
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
+
+from regime_engine import compute_regime_probe, classify_regime
 
 # ──────────────────────────────────────────────────────────────
 # LOGGING & TIMEZONE
@@ -48,8 +55,14 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 # ──────────────────────────────────────────────────────────────
 PARAMS = {
     # ─── Strategy selector ───────────────────────────────────
-    # Options: "trend" | "reversion" | "breakout"
-    "active_strategy": "trend",
+    # Options: "trend" | "reversion" | "breakout" | "auto"
+    "active_strategy": "auto",
+
+    # ─── Auto regime router (only used when active_strategy == "auto") ──
+    "regime_adx_trend_min": 25.0,   # ADX >= this -> Trend Confluence
+    "regime_adx_range_max": 20.0,   # ADX <  this -> Mean Reversion
+    "regime_vol_ratio":     1.1,    # Volume > MA20 * this, for breakout confirmation
+    "regime_state_file":    "regime_state.json",
 
     # ─── Timeframes ──────────────────────────────────────────
     "base_interval": "15m",   # Scanning timeframe
@@ -158,6 +171,23 @@ def _mark_alerted(ticker: str, candle_ts: str, signal: str) -> None:
 
 def _already_alerted(ticker: str, candle_ts: str, signal: str) -> bool:
     return _load_state().get(f"{ticker}_{signal}") == candle_ts
+
+# ──────────────────────────────────────────────────────────────
+# REGIME STATE (persists the auto-router's per-ticker strategy choice
+# across cron runs, so the transition-zone hysteresis in regime_engine
+# actually holds between the 15-min scans instead of resetting each time)
+# ──────────────────────────────────────────────────────────────
+REGIME_STATE_FILE = Path(__file__).parent / PARAMS["regime_state_file"]
+
+def _load_regime_state() -> dict:
+    try:    return json.loads(REGIME_STATE_FILE.read_text())
+    except: return {}
+
+def _save_regime_choice(ticker: str, strategy_key: str) -> None:
+    state = _load_regime_state()
+    state[ticker] = strategy_key
+    try: REGIME_STATE_FILE.write_text(json.dumps(state, indent=2))
+    except Exception as e: log.warning(f"Regime state write failed: {e}")
 
 def _download(ticker: str, period: str, interval: str) -> pd.DataFrame | None:
     for attempt in range(PARAMS["max_retries"]):
@@ -479,15 +509,18 @@ def send_telegram_alert(
     sig: dict,
     strategy_name: str,
     levels: dict,
+    regime_reason: str | None = None,
 ) -> None:
     stars    = "⭐" * sig["score"] + "☆" * (5 - sig["score"])
     htf_text = {1: "✅ BULLISH", -1: "🔴 BEARISH", 0: "⚪ NEUTRAL"}[sig["htf_bias"]]
     dir_icon = "📈 LONG ▲" if sig["signal"] == "BULLISH" else "📉 SHORT ▼"
+    regime_line = f"🤖 Regime: {regime_reason}\n" if regime_reason else ""
 
     msg = (
         f"{info['emoji']} *{info['name']}* ({ticker})\n"
         f"━━━━━━━━━━━━━━\n"
         f"🧠 Strategy: _{strategy_name}_\n"
+        f"{regime_line}"
         f"🔔 *{dir_icon}*\n"
         f"⭐ Confluence: {stars} ({sig['score']}/5)\n\n"
         f"💰 Entry:  ₹{levels['entry_inr']:>12,.2f}\n"
@@ -501,7 +534,7 @@ def send_telegram_alert(
         f"🔎 {sig.get('extra','')}\n"
         f"━━━━━━━━━━━━━━\n"
         f"🕐 _{datetime.now(IST).strftime('%Y-%m-%d %H:%M IST')}_\n"
-        f"_CommodityPulse Pro · Phase 4 Enterprise_"
+        f"_CommodityPulse Pro · Phase 5 Enterprise_"
     )
     try:
         r = requests.post(
@@ -514,14 +547,17 @@ def send_telegram_alert(
         log.error(f"Telegram send failed: {e}")
 
 
-def send_startup_message(strategy: BaseStrategy) -> None:
-    """Announce which strategy is running (optional — fired once per session)."""
+def send_startup_message(strategy: BaseStrategy | None) -> None:
+    """Announce which strategy/mode is running (optional — fired once per session)."""
     if not TOKEN or not CHAT_ID: return
-    icons = {"trend": "📈", "reversion": "↔️", "breakout": "💥"}
-    icon  = icons.get(strategy.key, "⚡")
+    if strategy is None:
+        icon, label = "🤖", "Auto (Regime-Adaptive Router)"
+    else:
+        icons = {"trend": "📈", "reversion": "↔️", "breakout": "💥"}
+        icon, label = icons.get(strategy.key, "⚡"), strategy.name
     msg = (
-        f"⚡ *CommodityPulse Pro — Phase 4 Bot Started*\n"
-        f"Active Strategy: {icon} _{strategy.name}_\n"
+        f"⚡ *CommodityPulse Pro — Phase 5 Bot Started*\n"
+        f"Active Strategy: {icon} _{label}_\n"
         f"Scanning: MCX + Crypto\n"
         f"Interval: Every 15 minutes\n"
         f"🕐 {datetime.now(IST).strftime('%Y-%m-%d %H:%M IST')}"
@@ -544,18 +580,21 @@ def main() -> None:
         log.error("Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID environment variables.")
         return
 
-    # ── Resolve active strategy ─────────────────────────────
+    # ── Resolve active strategy mode ────────────────────────
     strategy_key = PARAMS.get("active_strategy", "trend").lower()
-    if strategy_key not in STRATEGIES:
+    is_auto = strategy_key == "auto"
+
+    if not is_auto and strategy_key not in STRATEGIES:
         log.error(
             f"Unknown strategy '{strategy_key}'. "
-            f"Valid options: {list(STRATEGIES.keys())}"
+            f"Valid options: {list(STRATEGIES.keys()) + ['auto']}"
         )
         return
 
-    strategy = STRATEGIES[strategy_key]
-    log.info(f"CommodityPulse Pro — Phase 4 | Active strategy: [{strategy.name}]")
-    send_startup_message(strategy)
+    fixed_strategy = None if is_auto else STRATEGIES[strategy_key]
+    mode_label = "Auto (Regime-Adaptive Router)" if is_auto else fixed_strategy.name
+    log.info(f"CommodityPulse Pro — Phase 5 | Mode: [{mode_label}]")
+    send_startup_message(fixed_strategy)
 
     # ── Market hours gate ───────────────────────────────────
     mcx_open = is_mcx_open()
@@ -568,9 +607,11 @@ def main() -> None:
 
     # ── Main scan loop ──────────────────────────────────────
     for ticker, info in assets_to_scan.items():
-        log.info(f"→ Scanning {info['name']} ({ticker}) with [{strategy.name}]…")
+        log.info(f"→ Scanning {info['name']} ({ticker})…")
 
-        # 1. Higher Timeframe Bias (always EMA-based for structural context)
+        # 1. Higher Timeframe Bias (always EMA-based for structural context,
+        #    regardless of which base strategy ends up active — this is a
+        #    deliberate architectural boundary, unrelated to regime routing)
         bias = get_htf_bias(ticker)
         log.info(f"  HTF bias = {bias:+d} ({'BULLISH' if bias==1 else 'BEARISH' if bias==-1 else 'NEUTRAL'})")
 
@@ -580,9 +621,43 @@ def main() -> None:
             log.warning(f"  No data for {ticker} — skipping.")
             continue
 
+        # 2b. Auto Regime Router — classify regime from raw OHLCV *before*
+        #     any strategy-specific indicators are applied, then resolve
+        #     which strategy runs for this ticker this scan. Choice is
+        #     persisted to regime_state.json so the transition-zone
+        #     hysteresis holds across separate 15-min cron invocations.
+        regime_reason = None
+        if is_auto:
+            try:
+                regime_state = _load_regime_state()
+                prior_key    = regime_state.get(ticker)
+                probe_df     = compute_regime_probe(df_raw.copy())
+                regime_info  = classify_regime(
+                    probe_df, prior_strategy_key=prior_key,
+                    adx_trend_min=PARAMS["regime_adx_trend_min"],
+                    adx_range_max=PARAMS["regime_adx_range_max"],
+                    vol_ratio=PARAMS["regime_vol_ratio"],
+                    confirmed_row=-2,   # last CLOSED candle, matches check_signals() below
+                )
+            except Exception as e:
+                log.error(f"  Regime probe error for {ticker}: {e} — defaulting to Trend Confluence.")
+                regime_info = {"regime": "UNKNOWN", "strategy_key": "trend", "confidence": 0,
+                                "reason": "Regime probe failed.", "adx": None}
+
+            active_strategy = STRATEGIES[regime_info["strategy_key"]]
+            regime_reason   = regime_info["reason"]
+            _save_regime_choice(ticker, regime_info["strategy_key"])
+            log.info(
+                f"  🤖 Regime={regime_info['regime']} (conf {regime_info['confidence']}%, "
+                f"ADX={regime_info['adx']}) → {active_strategy.name}"
+            )
+            log.info(f"     {regime_reason}")
+        else:
+            active_strategy = fixed_strategy
+
         # 3. Apply strategy indicators
         try:
-            df = strategy.apply_indicators(df_raw.copy())
+            df = active_strategy.apply_indicators(df_raw.copy())
         except Exception as e:
             log.error(f"  Indicator error for {ticker}: {e}")
             continue
@@ -592,9 +667,9 @@ def main() -> None:
             continue
 
         # 4. Check for signal
-        sig = strategy.check_signals(df, bias)
+        sig = active_strategy.check_signals(df, bias)
         if sig is None:
-            log.info(f"  No signal for {ticker}.")
+            log.info(f"  No signal for {ticker} with [{active_strategy.name}].")
             continue
 
         log.info(f"  🚨 Signal detected: {sig['signal']} | score={sig['score']}/5 | ADX={sig['adx']:.1f}")
@@ -614,7 +689,7 @@ def main() -> None:
         )
 
         # 7. Send Telegram alert
-        send_telegram_alert(ticker, info, sig, strategy.name, levels)
+        send_telegram_alert(ticker, info, sig, active_strategy.name, levels, regime_reason=regime_reason)
         _mark_alerted(ticker, sig["ts"], sig["signal"])
         log.info(f"  ✅ Alert sent for {info['name']}.")
 
