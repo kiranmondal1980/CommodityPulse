@@ -10,13 +10,116 @@ All prices in INR (₹) · All times in IST · MCX Calibrated (15% duty)
 Smart Risk Engine · Dual-TP (1.5R / 3R) · Live Backtester · Chandelier Trail
 """
 
+# ─────────────────────────────────────────────────────────────
+# PANDAS_TA BULLETPROOF MOCK PATCH (REMOVES SEGMENTATION FAULT RISK)
+# ─────────────────────────────────────────────────────────────
+import sys
+import types
+import numpy as np
+import pandas as pd
+
+def compute_ema(series, length):
+    return series.ewm(span=length, adjust=False).mean()
+
+def compute_rsi(series, length=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1/length, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/length, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(50)
+
+def compute_atr(high, low, close, length=14):
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.ewm(alpha=1/length, adjust=False).mean()
+
+def compute_bbands(series, length=20, std=2):
+    ma = series.rolling(window=length).mean()
+    sd = series.rolling(window=length).std()
+    upper = ma + std * sd
+    lower = ma - std * sd
+    return lower, ma, upper
+
+def compute_adx(high, low, close, length=14):
+    up_move = high.diff()
+    down_move = low.diff()
+    pos_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    neg_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+    pos_dm = pd.Series(pos_dm, index=high.index)
+    neg_dm = pd.Series(neg_dm, index=high.index)
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/length, adjust=False).mean()
+    smoothed_pos_dm = pos_dm.ewm(alpha=1/length, adjust=False).mean()
+    smoothed_neg_dm = neg_dm.ewm(alpha=1/length, adjust=False).mean()
+    plus_di = 100 * (smoothed_pos_dm / atr.replace(0, np.nan))
+    minus_di = 100 * (smoothed_neg_dm / atr.replace(0, np.nan))
+    dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan))
+    adx = dx.ewm(alpha=1/length, adjust=False).mean()
+    return plus_di, minus_di, adx
+
+class TAMockAccessor:
+    def __init__(self, df):
+        self._df = df
+
+    def ema(self, length, append=True, **kwargs):
+        val = compute_ema(self._df['Close'], length)
+        if append:
+            self._df[f'EMA_{length}'] = val
+        return val
+
+    def rsi(self, length=14, append=True, **kwargs):
+        val = compute_rsi(self._df['Close'], length)
+        if append:
+            self._df[f'RSI_{length}'] = val
+        return val
+
+    def atr(self, length=14, append=True, **kwargs):
+        val = compute_atr(self._df['High'], self._df['Low'], self._df['Close'], length)
+        if append:
+            self._df[f'ATRr_{length}'] = val
+        return val
+
+    def bbands(self, length=20, std=2, append=True, **kwargs):
+        lower, mid, upper = compute_bbands(self._df['Close'], length, std)
+        if append:
+            self._df[f'BBL_{length}_{float(std)}'] = lower
+            self._df[f'BBM_{length}_{float(std)}'] = mid
+            self._df[f'BBU_{length}_{float(std)}'] = upper
+        return pd.DataFrame({f'BBL_{length}_{float(std)}': lower, f'BBM_{length}_{float(std)}': mid, f'BBU_{length}_{float(std)}': upper})
+
+    def adx(self, length=14, append=True, **kwargs):
+        plus_di, minus_di, adx = compute_adx(self._df['High'], self._df['Low'], self._df['Close'], length)
+        res = pd.DataFrame({f'ADX_{length}': adx, f'DMP_{length}': plus_di, f'DMN_{length}': minus_di})
+        if append:
+            for col in res.columns:
+                self._df[col] = res[col]
+        return res
+
+pd.api.extensions.register_dataframe_accessor("ta")(TAMockAccessor)
+
+pandas_ta_mock = types.ModuleType("pandas_ta")
+pandas_ta_mock.ema = compute_ema
+pandas_ta_mock.rsi = compute_rsi
+pandas_ta_mock.atr = compute_atr
+pandas_ta_mock.bbands = compute_bbands
+pandas_ta_mock.adx = compute_adx
+sys.modules["pandas_ta"] = pandas_ta_mock
+
+# ─────────────────────────────────────────────────────────────
+# MAIN STREAMLIT IMPORTS
+# ─────────────────────────────────────────────────────────────
 import streamlit as st
 import yfinance as yf
-import pandas as pd
-import pandas_ta as ta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import numpy as np
 import requests, os, time, math
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -33,9 +136,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ── THEME STATE (read BEFORE the CSS is built, so a toggle click on the
-#    previous rerun is already reflected in session_state by the time this
-#    script runs top-to-bottom again — standard Streamlit theming pattern) ──
+# ── THEME STATE ──
 if "theme_choice" not in st.session_state:
     st.session_state.theme_choice = "Light"
 if "compact_mobile" not in st.session_state:
@@ -44,8 +145,7 @@ if "compact_mobile" not in st.session_state:
 _THEME = st.session_state.theme_choice
 _MOBILE = st.session_state.compact_mobile
 
-# Brand constants — stay fixed across both themes (this is the one thing
-# that should never change: the blue/teal/red signal palette IS the brand).
+# Brand constants
 ACCENT   = "#2563eb"
 ACCENT_2 = "#7c3aed"
 SUCCESS  = "#089981"
@@ -75,7 +175,7 @@ ANNOT_FONT   = 8 if _MOBILE else 10
 
 st.markdown(f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Syne:wght@700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght=400;500;600&family=Syne:wght=700;800&display=swap');
 
 :root {{
     --bg-page: {PALETTE['bg_page']};
@@ -96,19 +196,31 @@ st.markdown(f"""
     --warning: {WARNING};
 }}
 
-html, body, [class*="css"] {{ font-family: 'IBM Plex Mono', monospace; }}
-
-/* Streamlit's built-in icons (sidebar collapse arrow, expander chevrons, etc.)
-   are rendered via a ligature font — e.g. the text "keyboard_double_arrow_left"
-   is invisible glyph-mapped text that becomes an arrow icon. The broad
-   [class*="css"] rule above was overriding that font, so the raw ligature
-   text showed up instead of the icon. This restores it. */
-[data-testid="stIconMaterial"], span[class*="material-symbols"], .material-symbols-rounded, .material-icons {{
-    font-family: 'Material Symbols Rounded', 'Material Icons' !important;
-    font-size: 1.25rem !important;
+/* Safe generic typography styling — avoids destroying layout and icon font properties */
+html, body, .stApp, .stApp p, .stApp label, .stApp select, .stApp button, .stApp input, .stApp textarea {{
+    font-family: 'IBM Plex Mono', monospace !important;
 }}
+
+/* Hard typography correction to protect Streamlit's native icon fonts */
+[data-testid="stIconMaterial"], 
+[data-testid="collapsedControl"] *,
+.material-symbols-outlined, 
+.material-symbols-rounded, 
+.material-icons,
+[class*="Icon"] {{
+    font-family: "Material Symbols Outlined", "Material Symbols Rounded", "Material Icons" !important;
+    font-style: normal !important;
+    font-weight: normal !important;
+    letter-spacing: normal !important;
+    text-transform: none !important;
+    white-space: nowrap !important;
+    word-wrap: normal !important;
+    direction: ltr !important;
+    -webkit-font-smoothing: antialiased !important;
+}}
+
 .stApp {{ background: var(--bg-page); }}
-h1, h2, h3 {{ font-family: 'Syne', sans-serif; font-weight: 800; color: var(--text-primary); letter-spacing: -0.5px; }}
+h1, h2, h3, h4 {{ font-family: 'Syne', sans-serif; font-weight: 800; color: var(--text-primary); letter-spacing: -0.5px; }}
 p, span, label, div {{ color: var(--text-primary); }}
 hr {{ border-color: var(--border) !important; }}
 ::selection {{ background: var(--accent); color: #fff; }}
@@ -131,11 +243,11 @@ div[data-testid="metric-container"]:hover {{
     transform: translateY(-3px); box-shadow: 0 8px 22px var(--chip-shadow);
 }}
 div[data-testid="metric-container"] > div:first-child {{
-    font-family:'IBM Plex Mono',monospace; font-size:11px;
+    font-family:'IBM Plex Mono',monospace !important; font-size:11px;
     text-transform:uppercase; letter-spacing:1px; color: var(--text-secondary);
 }}
 div[data-testid="metric-container"] > div:nth-child(2) {{
-    font-family:'Syne',sans-serif; font-weight:700; font-size:20px; color: var(--text-primary);
+    font-family:'Syne',sans-serif !important; font-weight:700; font-size:20px; color: var(--text-primary);
 }}
 
 .section-header {{
@@ -185,7 +297,7 @@ div[data-testid="metric-container"] > div:nth-child(2) {{
 .mkt-closed {{ background:#fee2e2; color:#991b1b; border:1px solid #fca5a5; border-radius:20px; padding:5px 14px; font-size:12px; font-weight:700; display:inline-block; }}
 .mkt-pre    {{ background:#fef9c3; color:#92400e; border:1px solid #fde68a; border-radius:20px; padding:5px 14px; font-size:12px; font-weight:700; display:inline-block; }}
 
-/* Live pulse dot — the one signature motion moment, reserved for "MCX OPEN" */
+/* Live pulse dot — reserved for "MCX OPEN" */
 .pulse-dot {{
     width:8px; height:8px; border-radius:50%; background:#166534;
     box-shadow:0 0 0 0 rgba(22,101,52,.55);
@@ -203,10 +315,18 @@ div[data-testid="metric-container"] > div:nth-child(2) {{
     padding:8px 14px; font-size:12px; color:#92400e; margin-bottom:10px;
 }}
 
-section[data-testid="stSidebar"] {{ background:#0d1117; border-right:1px solid #21262d; }}
-section[data-testid="stSidebar"] h3, section[data-testid="stSidebar"] label,
-section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] span,
-section[data-testid="stSidebar"] div {{ color:#e6edf3 !important; font-family:'IBM Plex Mono',monospace !important; }}
+/* Sidebar styling: Styled with safe selector rules to prevent layout shifting */
+section[data-testid="stSidebar"] {{ 
+    background:#0d1117 !important; 
+    border-right:1px solid #21262d !important; 
+}}
+section[data-testid="stSidebar"] h3, 
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] p, 
+section[data-testid="stSidebar"] .stMarkdown span {{ 
+    color:#e6edf3 !important; 
+    font-family:'IBM Plex Mono',monospace !important; 
+}}
 section[data-testid="stSidebar"] .stSelectbox>div>div {{ background:#161b22; border:1px solid #30363d; }}
 section[data-testid="stSidebar"] button {{ transition: transform .15s ease, box-shadow .15s ease; }}
 section[data-testid="stSidebar"] button:hover {{ transform: translateY(-1px); box-shadow:0 4px 14px rgba(37,99,235,.25); }}
@@ -255,11 +375,7 @@ section[data-testid="stSidebar"] button:hover {{ transform: translateY(-1px); bo
 .strat-info.reversion {{ border-color:#f9a8d4; border-left-color:#ec4899; background:linear-gradient(135deg,#fdf2f8,#fce7f3); }}
 .strat-info.breakout  {{ border-color:#fcd34d; border-left-color:#d97706; background:linear-gradient(135deg,#fffbeb,#fef3c7); }}
 
-/* ── MOBILE RESPONSIVENESS ──────────────────────────────────
-   Streamlit's st.columns() doesn't reflow on its own — it just
-   squeezes columns until they're unreadable. These rules force
-   the underlying flex containers to wrap into a proper 2-col /
-   1-col stacked grid below common phone/tablet breakpoints. */
+/* ── MOBILE RESPONSIVENESS ────────────────────────────────── */
 @media (max-width: 900px) {{
     div[data-testid="stHorizontalBlock"] {{ flex-wrap: wrap !important; gap: 10px !important; }}
     div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {{
@@ -382,9 +498,9 @@ def fetch_data(ticker, interval, fallback=None):
 def fetch_htf(ticker, htf_iv, fallback=None):
     df, actual, _ = fetch_data(ticker, htf_iv, fallback)
     if df is None or len(df) < 210: return 0, None, actual
-    df.ta.ema(length=9,  append=True)
-    df.ta.ema(length=21, append=True)
-    df.ta.ema(length=200,append=True)
+    df['EMA_9'] = compute_ema(df['Close'], 9)
+    df['EMA_21'] = compute_ema(df['Close'], 21)
+    df['EMA_200'] = compute_ema(df['Close'], 200)
     df.dropna(inplace=True)
     if df.empty: return 0, df, actual
     c = df.iloc[-1]
@@ -439,12 +555,16 @@ class TrendConfluence(BaseStrategy):
     )
 
     def apply_indicators(self, df):
-        for L in [9, 21, 200]: df.ta.ema(length=L, append=True)
-        df.ta.rsi(length=14, append=True)
-        df.ta.atr(length=14, append=True)
-        adx = df.ta.adx(length=14, append=False)
-        if adx is not None and not adx.empty:
-            for col in adx.columns: df[col] = adx[col]
+        for L in [9, 21, 200]: 
+            df[f'EMA_{L}'] = compute_ema(df['Close'], L)
+        df['RSI_14'] = compute_rsi(df['Close'], 14)
+        df['ATRr_14'] = compute_atr(df['High'], df['Low'], df['Close'], 14)
+        
+        plus_di, minus_di, adx = compute_adx(df['High'], df['Low'], df['Close'], 14)
+        df['ADX_14'] = adx
+        df['DMP_14'] = plus_di
+        df['DMN_14'] = minus_di
+        
         vol_ma = df['Volume'].rolling(20).mean() if 'Volume' in df.columns else None
         if vol_ma is not None: df['VOL_MA_20'] = vol_ma
         return df
@@ -487,16 +607,21 @@ class MeanReversionBollinger(BaseStrategy):
     )
 
     def apply_indicators(self, df):
-        df.ta.bbands(length=20, std=2, append=True)
-        df.ta.rsi(length=14, append=True)
-        df.ta.atr(length=14, append=True)
-        adx = df.ta.adx(length=14, append=False)
-        if adx is not None and not adx.empty:
-            for col in adx.columns: df[col] = adx[col]
+        bbl, bbm, bbu = compute_bbands(df['Close'], 20, 2)
+        df['BBL_20_2.0'] = bbl
+        df['BBM_20_2.0'] = bbm
+        df['BBU_20_2.0'] = bbu
+        
+        df['RSI_14'] = compute_rsi(df['Close'], 14)
+        df['ATRr_14'] = compute_atr(df['High'], df['Low'], df['Close'], 14)
+        
+        plus_di, minus_di, adx = compute_adx(df['High'], df['Low'], df['Close'], 14)
+        df['ADX_14'] = adx
+        df['DMP_14'] = plus_di
+        df['DMN_14'] = minus_di
         return df
 
     def _bb_cols(self, df):
-        """Locate the BB column names (pandas-ta names vary by version)."""
         lower = next((c for c in df.columns if c.startswith('BBL_')), None)
         upper = next((c for c in df.columns if c.startswith('BBU_')), None)
         mid   = next((c for c in df.columns if c.startswith('BBM_')), None)
@@ -508,12 +633,9 @@ class MeanReversionBollinger(BaseStrategy):
         lower, upper, _ = self._bb_cols(df)
         if lower is None or upper is None: return df
 
-        # BUY: price touches or pierces lower band AND RSI oversold
         bull = (df['Low'] <= df[lower]) & (df['RSI_14'] < 30)
-        # SELL: price touches or pierces upper band AND RSI overbought
         bear = (df['High'] >= df[upper]) & (df['RSI_14'] > 70)
 
-        # HTF bias filter: still respect it when bias is strong
         if htf_bias == 1:   df.loc[bull,'Signal'] =  1
         elif htf_bias ==-1: df.loc[bear,'Signal'] = -1
         else:
@@ -525,18 +647,15 @@ class MeanReversionBollinger(BaseStrategy):
         lower, upper, mid = self._bb_cols(df)
         if lower is None: return
 
-        # Upper band
         fig.add_trace(go.Scatter(
             x=df.index, y=df[upper], name='BB Upper',
             line=dict(color='#ec4899', width=1.5, dash='dot'), opacity=0.8
         ), row=row, col=1)
-        # Shaded fill between upper and lower
         fig.add_trace(go.Scatter(
             x=df.index, y=df[lower], name='BB Lower',
             line=dict(color='#ec4899', width=1.5, dash='dot'), opacity=0.8,
             fill='tonexty', fillcolor='rgba(236,72,153,0.07)'
         ), row=row, col=1)
-        # Middle band
         if mid:
             fig.add_trace(go.Scatter(
                 x=df.index, y=df[mid], name='BB Mid (SMA 20)',
@@ -560,16 +679,18 @@ class VolatilityBreakoutDonchian(BaseStrategy):
     DC_PERIOD = 20
 
     def apply_indicators(self, df):
-        # Donchian Channels
-        df['DC_HIGH'] = df['High'].rolling(self.DC_PERIOD).max().shift(1)  # shift(1) = confirmed previous high
+        df['DC_HIGH'] = df['High'].rolling(self.DC_PERIOD).max().shift(1)
         df['DC_LOW']  = df['Low'].rolling(self.DC_PERIOD).min().shift(1)
         df['DC_MID']  = (df['DC_HIGH'] + df['DC_LOW']) / 2
 
-        df.ta.atr(length=14, append=True)
-        df.ta.rsi(length=14, append=True)
-        adx = df.ta.adx(length=14, append=False)
-        if adx is not None and not adx.empty:
-            for col in adx.columns: df[col] = adx[col]
+        df['RSI_14'] = compute_rsi(df['Close'], 14)
+        df['ATRr_14'] = compute_atr(df['High'], df['Low'], df['Close'], 14)
+        
+        plus_di, minus_di, adx = compute_adx(df['High'], df['Low'], df['Close'], 14)
+        df['ADX_14'] = adx
+        df['DMP_14'] = plus_di
+        df['DMN_14'] = minus_di
+        
         if 'Volume' in df.columns:
             df['VOL_MA_20'] = df['Volume'].rolling(20).mean()
         return df
@@ -586,9 +707,7 @@ class VolatilityBreakoutDonchian(BaseStrategy):
         else:
             vol_ok = pd.Series(True, index=df.index)
 
-        # BUY breakout: close breaks above the previous 20-period high
         bull = (df['Close'] > df['DC_HIGH']) & adx_ok & vol_ok
-        # SELL breakout: close breaks below the previous 20-period low
         bear = (df['Close'] < df['DC_LOW'])  & adx_ok & vol_ok
 
         if htf_bias == 1:   df.loc[bull,'Signal'] =  1
@@ -601,32 +720,28 @@ class VolatilityBreakoutDonchian(BaseStrategy):
     def add_chart_overlays(self, fig, df, row=1):
         if 'DC_HIGH' not in df.columns: return
 
-        # Upper channel
         fig.add_trace(go.Scatter(
             x=df.index, y=df['DC_HIGH'], name=f'Donchian High ({self.DC_PERIOD})',
             line=dict(color='#f59e0b', width=1.8, dash='dot'), opacity=0.9
         ), row=row, col=1)
-        # Lower channel with fill
         fig.add_trace(go.Scatter(
             x=df.index, y=df['DC_LOW'], name=f'Donchian Low ({self.DC_PERIOD})',
             line=dict(color='#f59e0b', width=1.8, dash='dot'), opacity=0.9,
             fill='tonexty', fillcolor='rgba(245,158,11,0.06)'
         ), row=row, col=1)
-        # Mid channel
         fig.add_trace(go.Scatter(
             x=df.index, y=df['DC_MID'], name='Donchian Mid',
             line=dict(color='#d97706', width=1, dash='dash'), opacity=0.6
         ), row=row, col=1)
 
 
-# Strategy registry — order matters for sidebar display
+# Strategy registry
 STRATEGIES: dict[str, BaseStrategy] = {
     "Trend Confluence (MTF)":          TrendConfluence(),
     "Mean Reversion (Bollinger Fade)": MeanReversionBollinger(),
     "Volatility Breakout (Donchian)":  VolatilityBreakoutDonchian(),
 }
 
-# Maps regime_engine's short strategy keys -> the display-name keys STRATEGIES uses here
 STRATEGY_KEY_MAP = {
     "trend":     "Trend Confluence (MTF)",
     "reversion": "Mean Reversion (Bollinger Fade)",
@@ -673,7 +788,7 @@ def dual_tp(entry, sl, signal):
     else:           return entry - 1.5 * risk, entry - 3.0 * risk
 
 # ─────────────────────────────────────────────────────────────
-# LIVE BACKTESTER  (works for all strategies)
+# LIVE BACKTESTER
 # ─────────────────────────────────────────────────────────────
 def run_backtest(df, atr_col, lot_size, capital_start, risk_pct):
     signals = df[df['Signal'] != 0].copy()
@@ -846,9 +961,7 @@ def main():
     with st.sidebar:
         st.markdown("<h3 style='color:#58a6ff;font-family:Syne,sans-serif;font-size:18px'>⚙️ Terminal</h3>", unsafe_allow_html=True)
 
-        # Appearance controls — read at the top of the script (before CSS is
-        # built) via session_state, so changing either takes effect on the
-        # very next rerun. See _THEME / _MOBILE near the top of the file.
+        # Appearance controls
         ac1, ac2 = st.columns(2)
         with ac1:
             st.radio("Theme", ["Light", "Dark"], horizontal=True, key="theme_choice", label_visibility="collapsed")
@@ -872,9 +985,7 @@ def main():
         strategy_name = st.selectbox("🧠 Algorithm", [AUTO_LABEL] + list(STRATEGIES.keys()))
         is_auto_mode  = (strategy_name == AUTO_LABEL)
 
-        # Strategy info card — in Auto mode the actual strategy isn't known
-        # until live data + regime classification runs below, so we show a
-        # placeholder here and the resolved badge/reason near the chart header.
+        # Strategy info card
         if is_auto_mode:
             strategy = None
             st.markdown(
@@ -908,7 +1019,7 @@ def main():
 
         st.divider()
         enable_alerts = st.toggle("🔔 Telegram Alerts", value=False)
-        if st.button("🚀 Send Test Alert", use_container_width=True):
+        if st.button("🚀 Send Test Alert", width="stretch"):
             _test_name = "Auto (Regime-Adaptive)" if is_auto_mode else strategy.name
             send_telegram(f"✅ CommodityPulse Pro Phase 5: [{_test_name}] — System online. (IST)")
             st.toast("Test alert sent!", icon="🚀")
@@ -934,9 +1045,6 @@ def main():
         st.stop()
 
     # ── AUTO REGIME ROUTER ───────────────────
-    # Resolve which strategy to run *before* indicators are applied below.
-    # Hysteresis is kept per (region, asset, timeframe) across reruns via
-    # session_state, so the router won't whipsaw across the ADX 20-25 zone.
     regime_info = None
     if is_auto_mode:
         regime_state_key = f"auto_regime::{region}::{asset_name}::{timeframe}"
@@ -990,7 +1098,6 @@ def main():
     if 'EMA_200' in df.columns and not pd.isna(curr.get('EMA_200', float('nan'))):
         active_trend = "BULLISH 🟢" if curr['Close']>curr['EMA_200'] else "BEARISH 🔴"
     elif 'DC_HIGH' in df.columns:
-        # For strategies without 200 EMA, use HTF bias as proxy
         active_trend = "BULLISH 🟢" if htf_bias==1 else "BEARISH 🔴" if htf_bias==-1 else "NEUTRAL ⚪"
 
     latest_signal = int(curr['Signal'])
@@ -1004,7 +1111,7 @@ def main():
         if not any(pd.isna(v) for v in [e9,e21,e200]):
             base_bias = 1 if e9>e21 and curr['Close']>e200 else (-1 if e9<e21 and curr['Close']<e200 else 0)
     else:
-        base_bias = htf_bias  # Fall back to HTF for strategies without 200 EMA
+        base_bias = htf_bias
 
     risk_data = compute_risk(capital_inr, risk_pct, current_atr, lot_size, float(curr['Close']))
     lots      = risk_data['lots']
@@ -1078,9 +1185,6 @@ def main():
     if daily_interval != htf_interval: tf_biases[daily_interval] = daily_bias
     st.markdown(render_matrix(tf_biases), unsafe_allow_html=True)
 
-    # Regime warnings specific to each strategy — only meaningful in manual
-    # mode. In Auto mode the router already picked the strategy that fits
-    # the current regime, so these would just contradict the badge above.
     if not is_auto_mode:
         if isinstance(strategy, TrendConfluence) and regime == "choppy":
             adx_v = f"{current_adx:.1f}" if current_adx else "N/A"
@@ -1158,7 +1262,6 @@ def main():
     fig = make_subplots(rows=n_rows, cols=1, shared_xaxes=True, row_heights=heights,
                         vertical_spacing=0.03, subplot_titles=titles)
 
-    # Candlestick
     fig.add_trace(go.Candlestick(
         x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
         name='Price (INR)',
@@ -1166,14 +1269,11 @@ def main():
         decreasing_line_color='#F23645', decreasing_fillcolor='#F23645'
     ), row=1, col=1)
 
-    # Strategy-specific overlays (dynamic — changes per selection)
     strategy.add_chart_overlays(fig, df, row=1)
 
-    # Chandelier trail
     if show_chandelier and not chan_series.empty:
         draw_chandelier(fig, chan_series, df, row=1)
 
-    # Signal markers
     bulls = df[df['Signal']== 1]
     bears = df[df['Signal']==-1]
     if not bulls.empty:
@@ -1189,7 +1289,6 @@ def main():
             marker=dict(symbol='triangle-down', color='#F23645', size=14, line=dict(width=1.5,color='white'))
         ), row=1, col=1)
 
-    # Dual-TP zones for last signal
     sig_series = df['Signal']
     nz = sig_series[sig_series!=0]
     if not nz.empty and current_atr>0:
@@ -1218,7 +1317,7 @@ def main():
     if has_vol: fig.update_yaxes(title_text="Volume",showgrid=True,gridcolor=PALETTE['plot_grid'],row=3,col=1)
     fig.update_xaxes(title_text="Indian Standard Time (IST)",showgrid=True,gridcolor=PALETTE['plot_grid'],
                      title_font=dict(color=PALETTE['plot_font'],size=11),row=n_rows,col=1)
-    st.plotly_chart(fig, use_container_width=True, config={"responsive": True, "displaylogo": False})
+    st.plotly_chart(fig, width="stretch", config={"responsive": True, "displaylogo": False})
 
     # ── LIVE BACKTEST ─────────────────────────
     st.markdown("<hr style='border:1px solid #e2e8f0;margin:24px 0 12px'>", unsafe_allow_html=True)
@@ -1280,7 +1379,7 @@ def main():
             tdf_show  = tdf[show_cols].rename(columns={
                 'time':'Time (IST)','entry':'Entry ₹','sl':'SL ₹','tp1':'TP1 ₹','pnl':'P&L ₹','equity':'Running Equity ₹'
             }).iloc[::-1]
-            st.dataframe(tdf_show, use_container_width=True, column_config={
+            st.dataframe(tdf_show, width="stretch", column_config={
                 'Entry ₹':          st.column_config.NumberColumn(format="₹%.2f"),
                 'SL ₹':             st.column_config.NumberColumn(format="₹%.2f"),
                 'TP1 ₹':            st.column_config.NumberColumn(format="₹%.2f"),
@@ -1307,7 +1406,7 @@ def main():
                "RSI_14": st.column_config.NumberColumn("RSI", format="%.1f")}
         if atr_col: cfg[atr_col] = st.column_config.NumberColumn("ATR (₹)", format="₹%.2f")
         if adx_col: cfg[adx_col] = st.column_config.NumberColumn("ADX", format="%.1f")
-        st.dataframe(log_df, use_container_width=True, column_config=cfg)
+        st.dataframe(log_df, width="stretch", column_config=cfg)
     else:
         st.info("No MTF-confirmed signals yet in current window.")
 
