@@ -25,6 +25,7 @@ import requests
 import os
 import time
 import json
+import math
 import logging
 import pytz
 from abc import ABC, abstractmethod
@@ -32,6 +33,7 @@ from datetime import datetime
 from pathlib import Path
 
 from regime_engine import compute_regime_probe, classify_regime
+from quant_lab import rolling_correlation, correlated_risk_check
 
 # ──────────────────────────────────────────────────────────────
 # LOGGING & TIMEZONE
@@ -106,17 +108,31 @@ PARAMS = {
     "fetch_sleep":  2,
     "max_retries":  3,
     "import_duty":  1.15,   # 15% Indian import duty for Gold/Silver
+
+    # ─── Portfolio Risk Cap (correlation-aware) ──────────────
+    # The per-trade 2%-style rule doesn't protect you if two correlated
+    # assets (e.g. Gold + Silver) both fire in the same direction at once —
+    # that's not two independent 2% bets, it's one bigger correlated bet.
+    # This caps the COMBINED risk of open positions in the same correlated
+    # group, in addition to (not instead of) each trade's own sizing.
+    "portfolio_capital_inr":    500_000,
+    "position_risk_pct":        2.0,     # fixed % used to size the bot's own lots (Kelly needs a live backtest, which only the Streamlit terminal runs)
+    "max_group_risk_pct":       4.0,     # cap on combined risk within a correlated group
+    "correlation_lookback_days": 60,
+    "correlation_threshold":    0.6,     # |corr| >= this counts as "correlated"
+    "position_stale_hours":     72,      # auto-expire an open position that never hits SL/TP1 (data gaps, etc.)
+    "open_positions_file":      "open_positions.json",
 }
 
 # ──────────────────────────────────────────────────────────────
 # ASSET UNIVERSE (MCX CALIBRATED)
 # ──────────────────────────────────────────────────────────────
 ASSETS = {
-    "XAUUSD=X": {"name": "Gold (MCX)",    "emoji": "🟡", "type": "gold"},
-    "XAGUSD=X": {"name": "Silver (MCX)",  "emoji": "⚪", "type": "silver"},
-    "BZ=F":     {"name": "Crude Oil MCX", "emoji": "🛢️", "type": "comm"},
-    "NG=F":     {"name": "Natural Gas",   "emoji": "🔥", "type": "comm"},
-    "BTC-USD":  {"name": "Bitcoin",       "emoji": "₿",  "type": "crypto"},
+    "XAUUSD=X": {"name": "Gold (MCX)",    "emoji": "🟡", "type": "gold",   "lot_size": 10},
+    "XAGUSD=X": {"name": "Silver (MCX)",  "emoji": "⚪", "type": "silver", "lot_size": 1},
+    "BZ=F":     {"name": "Crude Oil MCX", "emoji": "🛢️", "type": "comm",   "lot_size": 100},
+    "NG=F":     {"name": "Natural Gas",   "emoji": "🔥", "type": "comm",   "lot_size": 10},
+    "BTC-USD":  {"name": "Bitcoin",       "emoji": "₿",  "type": "crypto", "lot_size": 1},
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -188,6 +204,64 @@ def _save_regime_choice(ticker: str, strategy_key: str) -> None:
     state[ticker] = strategy_key
     try: REGIME_STATE_FILE.write_text(json.dumps(state, indent=2))
     except Exception as e: log.warning(f"Regime state write failed: {e}")
+
+# ──────────────────────────────────────────────────────────────
+# OPEN POSITION TRACKING (for the correlation-aware portfolio risk cap)
+# The bot fires alerts but never previously tracked whether that trade was
+# still "live." Without knowing what's currently open, a correlation cap
+# has nothing to sum risk across. This keeps a lightweight open-position
+# ledger: entry/SL/TP1/direction/risk, closed out on next scan once price
+# breaches SL or TP1, and auto-expired after position_stale_hours so a
+# data gap can't permanently block future signals in that group.
+# ──────────────────────────────────────────────────────────────
+OPEN_POSITIONS_FILE = Path(__file__).parent / PARAMS["open_positions_file"]
+
+def _load_open_positions() -> dict:
+    try:    return json.loads(OPEN_POSITIONS_FILE.read_text())
+    except: return {}
+
+def _save_open_positions(positions: dict) -> None:
+    try: OPEN_POSITIONS_FILE.write_text(json.dumps(positions, indent=2, default=str))
+    except Exception as e: log.warning(f"Open-position state write failed: {e}")
+
+def _expire_stale_positions() -> None:
+    """Clears any open position older than position_stale_hours with no
+    SL/TP1 hit recorded — guards against a data gap permanently blocking
+    future signals in that correlation group."""
+    positions = _load_open_positions()
+    now = datetime.now(IST)
+    changed = False
+    for ticker in list(positions.keys()):
+        opened_ts = datetime.fromisoformat(positions[ticker]["opened_ts"])
+        age_hours = (now - opened_ts).total_seconds() / 3600
+        if age_hours > PARAMS["position_stale_hours"]:
+            log.info(f"  ⏱️ Open position on {ticker} expired after {age_hours:.0f}h with no SL/TP1 hit — clearing from risk pool.")
+            del positions[ticker]; changed = True
+    if changed:
+        _save_open_positions(positions)
+
+def _check_and_close_position(ticker: str, df_raw: pd.DataFrame) -> None:
+    """Closes out ticker's open position (if any) if the latest bar's
+    High/Low breached its SL or TP1. Compares in NATIVE units (same as
+    df_raw), since sl/tp1 are stored native — not INR — for exactly this
+    reason. Called inline, right after each ticker's data download."""
+    positions = _load_open_positions()
+    pos = positions.get(ticker)
+    if not pos or df_raw is None or df_raw.empty:
+        return
+
+    last = df_raw.iloc[-1]
+    hi, lo = float(last['High']), float(last['Low'])
+    direction, sl, tp1 = pos["direction"], pos["sl"], pos["tp1"]
+
+    hit_sl  = (lo <= sl) if direction == "BULLISH" else (hi >= sl)
+    hit_tp1 = (hi >= tp1) if direction == "BULLISH" else (lo <= tp1)
+
+    if hit_sl or hit_tp1:
+        outcome = "TP1 hit ✅" if hit_tp1 else "SL hit 🛑"
+        log.info(f"  📤 Closing open position on {ticker} ({direction}) — {outcome}")
+        del positions[ticker]
+        _save_open_positions(positions)
 
 def _download(ticker: str, period: str, interval: str) -> pd.DataFrame | None:
     for attempt in range(PARAMS["max_retries"]):
@@ -473,31 +547,52 @@ def get_htf_bias(ticker: str) -> int:
 # RISK & DUAL-TP CALCULATION
 # ──────────────────────────────────────────────────────────────
 def calculate_trade_levels(sig: dict, info: dict) -> dict:
-    """Return entry, SL, TP1, TP2 all in INR."""
+    """Return entry, SL, TP1, TP2 in INR — plus native-unit (pre-conversion)
+    SL/TP1, needed because the position tracker compares against df_raw's
+    High/Low, which are in the ticker's own native currency/units, not INR."""
     p = PARAMS
     asset_type = info["type"]
 
     entry_inr = to_inr(sig["price"], asset_type)
     sl_dist_usd = p["sl_atr_mult"] * sig["atr"]
-    sl_usd = (sig["price"] - sl_dist_usd if sig["signal"] == "BULLISH"
-              else sig["price"] + sl_dist_usd)
-    sl_inr  = to_inr(sl_usd, asset_type)
+    sl_native = (sig["price"] - sl_dist_usd if sig["signal"] == "BULLISH"
+                 else sig["price"] + sl_dist_usd)
+    sl_inr  = to_inr(sl_native, asset_type)
 
     risk_inr = abs(entry_inr - sl_inr)
     if sig["signal"] == "BULLISH":
-        tp1_inr = entry_inr + risk_inr * p["tp1_rr"]
-        tp2_inr = entry_inr + risk_inr * p["tp2_rr"]
+        tp1_inr    = entry_inr + risk_inr * p["tp1_rr"]
+        tp2_inr    = entry_inr + risk_inr * p["tp2_rr"]
+        tp1_native = sig["price"] + sl_dist_usd * p["tp1_rr"]
     else:
-        tp1_inr = entry_inr - risk_inr * p["tp1_rr"]
-        tp2_inr = entry_inr - risk_inr * p["tp2_rr"]
+        tp1_inr    = entry_inr - risk_inr * p["tp1_rr"]
+        tp2_inr    = entry_inr - risk_inr * p["tp2_rr"]
+        tp1_native = sig["price"] - sl_dist_usd * p["tp1_rr"]
 
     return {
         "entry_inr": entry_inr,
         "sl_inr":    sl_inr,
         "tp1_inr":   tp1_inr,
         "tp2_inr":   tp2_inr,
-        "risk_inr":  risk_inr,
+        "risk_inr":  risk_inr,   # per-unit-price risk distance in INR, NOT total capital at risk
+        "sl_native":  sl_native,   # same units as df_raw's High/Low — for position-close checks
+        "tp1_native": tp1_native,
     }
+
+
+def compute_position_size(risk_per_unit_inr: float, lot_size: float, capital_inr: float, risk_pct: float) -> dict:
+    """
+    Fixed-%-of-capital lot sizing for the bot (mirrors the Streamlit
+    terminal's Fixed Risk mode). Kelly sizing isn't offered here since it
+    needs a live backtest to derive win-rate/payoff-ratio from — that only
+    the Streamlit terminal computes. This just produces an actual rupee
+    figure so the correlation risk cap below has something to sum.
+    """
+    risk_budget_inr = capital_inr * (risk_pct / 100.0)
+    risk_per_lot    = risk_per_unit_inr * lot_size
+    lots            = max(1, math.floor(risk_budget_inr / risk_per_lot)) if risk_per_lot > 0 else 1
+    actual_risk_inr = lots * risk_per_lot
+    return {"lots": lots, "actual_risk_inr": actual_risk_inr}
 
 
 # ──────────────────────────────────────────────────────────────
@@ -573,6 +668,26 @@ def send_startup_message(strategy: BaseStrategy | None) -> None:
 
 
 # ──────────────────────────────────────────────────────────────
+# CORRELATION MATRIX (for the portfolio risk cap)
+# ──────────────────────────────────────────────────────────────
+def build_correlation_matrix(assets: dict, lookback_days: int) -> pd.DataFrame:
+    """
+    Downloads recent daily closes for every asset in `assets` and returns a
+    pairwise return-correlation matrix (via quant_lab.rolling_correlation).
+    One extra download pass per ticker per scan — acceptable at a 15-min
+    cadence. Silently skips tickers that fail to download; the risk cap
+    treats missing correlations as "not correlated" (allow), same as any
+    other conservative default in this codebase.
+    """
+    price_series = {}
+    for ticker in assets.keys():
+        df = _download(ticker, f"{lookback_days + 10}d", "1d")
+        if df is not None and not df.empty and 'Close' in df.columns:
+            price_series[ticker] = df['Close']
+    return rolling_correlation(price_series, lookback=lookback_days)
+
+
+# ──────────────────────────────────────────────────────────────
 # MAIN EXECUTION
 # ──────────────────────────────────────────────────────────────
 def main() -> None:
@@ -595,6 +710,16 @@ def main() -> None:
     mode_label = "Auto (Regime-Adaptive Router)" if is_auto else fixed_strategy.name
     log.info(f"CommodityPulse Pro — Phase 5 | Mode: [{mode_label}]")
     send_startup_message(fixed_strategy)
+
+    # ── Portfolio risk cap setup ─────────────────────────────
+    # Clear any open position that never resolved (data gap, etc.), then
+    # build today's correlation matrix once for the whole scan — this is
+    # what lets the risk cap tell "two independent 2% bets" apart from
+    # "one bigger correlated bet wearing two tickers."
+    _expire_stale_positions()
+    corr_matrix = build_correlation_matrix(ASSETS, PARAMS["correlation_lookback_days"])
+    if corr_matrix.empty:
+        log.warning("  Correlation matrix unavailable this scan — portfolio risk cap will allow by default.")
 
     # ── Market hours gate ───────────────────────────────────
     mcx_open = is_mcx_open()
@@ -620,6 +745,11 @@ def main() -> None:
         if df_raw is None or df_raw.empty:
             log.warning(f"  No data for {ticker} — skipping.")
             continue
+
+        # 2a. Close out this ticker's open position (if any) before doing
+        #     anything else this cycle — keeps the risk pool accurate for
+        #     the correlation cap check further below.
+        _check_and_close_position(ticker, df_raw)
 
         # 2b. Auto Regime Router — classify regime from raw OHLCV *before*
         #     any strategy-specific indicators are applied, then resolve
@@ -688,10 +818,35 @@ def main() -> None:
             f"TP2 ₹{levels['tp2_inr']:,.2f}"
         )
 
+        # 6b. Portfolio risk cap — combined risk within a correlated group
+        #     (e.g. Gold + Silver both BUY at once) can quietly exceed your
+        #     per-trade 2% rule even though each trade looks fine alone.
+        lot_info = compute_position_size(levels["risk_inr"], info["lot_size"],
+                                          PARAMS["portfolio_capital_inr"], PARAMS["position_risk_pct"])
+        open_positions = _load_open_positions()
+        risk_check = correlated_risk_check(
+            ticker, sig["signal"], lot_info["actual_risk_inr"], open_positions, corr_matrix,
+            capital_inr=PARAMS["portfolio_capital_inr"], max_group_risk_pct=PARAMS["max_group_risk_pct"],
+            corr_threshold=PARAMS["correlation_threshold"])
+
+        if not risk_check["allowed"]:
+            log.info(f"  🚫 Correlation risk cap blocked this alert — {risk_check['reason']}")
+            _mark_alerted(ticker, sig["ts"], sig["signal"])  # avoid re-logging the same candle every scan
+            continue
+
         # 7. Send Telegram alert
         send_telegram_alert(ticker, info, sig, active_strategy.name, levels, regime_reason=regime_reason)
         _mark_alerted(ticker, sig["ts"], sig["signal"])
-        log.info(f"  ✅ Alert sent for {info['name']}.")
+
+        # 7b. Register this as an open position (native-unit SL/TP1, so the
+        #     close-check above compares apples-to-apples against df_raw).
+        open_positions[ticker] = {
+            "direction": sig["signal"], "sl": levels["sl_native"], "tp1": levels["tp1_native"],
+            "risk_inr": lot_info["actual_risk_inr"], "lots": lot_info["lots"],
+            "opened_ts": datetime.now(IST).isoformat(),
+        }
+        _save_open_positions(open_positions)
+        log.info(f"  ✅ Alert sent for {info['name']} — {lot_info['lots']} lot(s), ₹{lot_info['actual_risk_inr']:,.0f} at risk.")
 
     log.info("Scan complete.")
 
