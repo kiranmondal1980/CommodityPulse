@@ -22,6 +22,8 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 import pytz
 from regime_engine import compute_regime_probe, classify_regime
+from quant_lab import (kelly_fraction, time_sliced_stability, monte_carlo_bootstrap,
+                        apply_transaction_costs)
 
 # ─────────────────────────────────────────────────────────────
 # PAGE CONFIG
@@ -737,7 +739,7 @@ def run_backtest(df, atr_col, lot_size, capital_start, risk_pct):
         equity += pnl_inr
         equity_curve.append(equity)
         trades.append({
-            "time": sig_time, "signal": sig, "entry": entry,
+            "time": sig_time, "signal": sig, "entry": entry, "lots": lots,
             "sl": sl, "tp1": tp1, "outcome": outcome, "pnl": pnl_inr, "equity": equity,
         })
 
@@ -919,12 +921,41 @@ def main():
             "text-transform:uppercase;margin-bottom:4px'>💰 Risk Management</p>",
             unsafe_allow_html=True)
         capital_inr = st.number_input("Trading Capital (₹)", min_value=10_000, max_value=10_000_000, value=500_000, step=50_000, format="%d")
-        risk_pct    = st.slider("Risk Per Trade (%)", min_value=0.5, max_value=5.0, value=2.0, step=0.5)
+
+        sizing_method = st.radio(
+            "Position Sizing Method", ["Fixed % Risk", "Half-Kelly (Backtest-Derived)"],
+            help="Half-Kelly sizes each trade from this asset's own realized win-rate and win/loss "
+                 "ratio, scaled to half of full-Kelly and capped — the standard professional "
+                 "compromise between growth and drawdown variance. Falls back to Fixed % if the "
+                 "backtest sample is too small or the edge is negative.")
+        risk_pct = st.slider("Risk Per Trade (%) — Fixed mode / Kelly baseline", min_value=0.5, max_value=5.0, value=2.0, step=0.5)
+
+        if sizing_method == "Half-Kelly (Backtest-Derived)":
+            kc1, kc2 = st.columns(2)
+            with kc1:
+                kelly_multiplier = st.slider("Kelly ×", 0.1, 1.0, 0.5, 0.1, help="0.5 = Half-Kelly (recommended). 1.0 = Full Kelly (aggressive, high variance).")
+            with kc2:
+                kelly_cap = st.slider("Kelly Cap (%)", 2.0, 25.0, 10.0, 1.0, help="Hard ceiling on risk-per-trade regardless of what Kelly suggests.")
+        else:
+            kelly_multiplier, kelly_cap = 0.5, 10.0
+
+        with st.expander("💸 Transaction Cost Assumptions"):
+            apply_costs = st.toggle("Net the backtest against costs", value=True)
+            brokerage_per_lot = st.number_input("Brokerage per lot (₹, round-trip x2 applied)", min_value=0.0, max_value=200.0, value=20.0, step=5.0)
+            stt_pct = st.slider("STT (%)", 0.0, 0.05, 0.01, 0.005, format="%.3f%%") / 100
+            slippage_pct = st.slider("Slippage (%)", 0.0, 0.20, 0.05, 0.01, format="%.2f%%") / 100
 
         st.divider()
         st.markdown("<p style='color:#8b949e;font-size:11px;margin-bottom:4px'>🎨 CHART OPTIONS</p>", unsafe_allow_html=True)
         show_chandelier = st.toggle("📍 Chandelier Trail", value=True)
         chan_mult = st.slider("Trail Multiplier (ATR×)", 1.5, 5.0, 3.0, 0.5) if show_chandelier else 3.0
+
+        st.divider()
+        st.markdown("<p style='color:#8b949e;font-size:11px;margin-bottom:4px'>🔬 QUANT RISK LAB</p>", unsafe_allow_html=True)
+        run_stability_check = st.toggle("Time-Sliced Stability Check", value=True, help="Splits the backtest into contiguous chronological windows to see whether the edge holds up over time, rather than being concentrated in one lucky stretch.")
+        n_windows = st.slider("Stability windows", 3, 8, 4) if run_stability_check else 4
+        run_monte_carlo = st.toggle("Monte Carlo Risk-of-Ruin", value=True, help="Bootstrap-resamples your realized trades thousands of times to show the range of equity paths this edge could plausibly produce, not just the one path it happened to take.")
+        n_sims = st.select_slider("Simulations", options=[500, 1000, 2000, 5000], value=2000) if run_monte_carlo else 2000
 
         st.divider()
         enable_alerts = st.toggle("🔔 Telegram Alerts", value=False)
@@ -935,6 +966,7 @@ def main():
 
         if "last_alert_time" not in st.session_state:
             st.session_state.last_alert_time = None
+
 
         st.markdown("<p style='color:#4b5563;font-size:10px;margin-top:14px'>MCX: Mon–Fri 09:00–23:30 IST</p>", unsafe_allow_html=True)
 
@@ -1026,7 +1058,32 @@ def main():
     else:
         base_bias = htf_bias  # Fall back to HTF for strategies without 200 EMA
 
-    risk_data = compute_risk(capital_inr, risk_pct, current_atr, lot_size, float(curr['Close']))
+    # ── LIVE BACKTEST (moved ahead of position sizing — Half-Kelly below
+    #    needs this backtest's realized win-rate/avg-win/avg-loss as its
+    #    input. The backtest itself always sizes its simulated trades using
+    #    the fixed risk_pct baseline, never Kelly — sizing the backtest with
+    #    a fraction derived FROM that same backtest would be circular.) ────
+    bt = run_backtest(df, atr_col, lot_size, capital_inr, risk_pct)
+
+    # ── POSITION SIZING: Fixed % Risk vs Half-Kelly ─────────────────────
+    kelly_result = None
+    effective_risk_pct = risk_pct
+    if sizing_method == "Half-Kelly (Backtest-Derived)":
+        if bt and bt['wins'] > 0 and bt['losses'] > 0:
+            avg_win_bt  = bt['gross_profit'] / bt['wins']
+            avg_loss_bt = bt['gross_loss'] / bt['losses']
+            kelly_result = kelly_fraction(
+                win_rate=bt['win_rate'] / 100.0, avg_win=avg_win_bt, avg_loss=avg_loss_bt,
+                kelly_multiplier=kelly_multiplier, cap=kelly_cap / 100.0, n_trades=bt['trades'])
+        else:
+            kelly_result = {"usable": False, "reason": "No completed backtest trades yet to derive Kelly from."}
+
+        if kelly_result["usable"]:
+            effective_risk_pct = kelly_result["fraction"] * 100
+        else:
+            st.warning(f"⚠️ Half-Kelly unavailable — {kelly_result['reason']} Using Fixed {risk_pct}% instead.", icon="⚠️")
+
+    risk_data = compute_risk(capital_inr, effective_risk_pct, current_atr, lot_size, float(curr['Close']))
     lots      = risk_data['lots']
     sl_dist   = risk_data['sl_dist']
     sl_price  = (float(curr['Close'])-sl_dist) if latest_signal>=0 else (float(curr['Close'])+sl_dist)
@@ -1040,7 +1097,6 @@ def main():
     )
 
     chan_series = compute_chandelier(df, atr_col, period=22, multiplier=chan_mult) if show_chandelier and atr_col else pd.Series()
-    bt = run_backtest(df, atr_col, lot_size, capital_inr, risk_pct)
 
     if enable_alerts and latest_signal!=0 and st.session_state.last_alert_time!=latest_time:
         adx_str = f"{current_adx:.1f}" if current_adx else "N/A"
@@ -1130,10 +1186,12 @@ def main():
     with st.expander("📦 Smart Risk & Position Sizing", expanded=True):
         pc1,pc2,pc3 = st.columns(3)
         dir_str = "LONG 🟢" if latest_signal>=0 else "SHORT 🔴"
+        sizing_label = (f"Half-Kelly · {effective_risk_pct:.2f}%" if (sizing_method == "Half-Kelly (Backtest-Derived)" and kelly_result and kelly_result["usable"])
+                        else f"Fixed · {effective_risk_pct:.1f}%")
         with pc1:
             st.markdown(f"""<div class='dark-card'>
-                <h4>Position Calculator</h4>
-                <div class='drow'><span class='dlabel'>Capital at Risk ({risk_pct}%)</span><span class='dval'>₹{risk_data['risk_inr']:,.0f}</span></div>
+                <h4>Position Calculator <span style='color:#8b949e;font-size:11px;font-weight:400'>({sizing_label})</span></h4>
+                <div class='drow'><span class='dlabel'>Capital at Risk ({effective_risk_pct:.2f}%)</span><span class='dval'>₹{risk_data['risk_inr']:,.0f}</span></div>
                 <div class='drow'><span class='dlabel'>ATR SL Distance</span><span class='dval'>₹{sl_dist:,.2f}/unit</span></div>
                 <div class='drow'><span class='dlabel'>Risk per Lot</span><span class='dval'>₹{risk_data['sl_per_lot']:,.0f}</span></div>
                 <div class='drow'><span class='dlabel'>MCX Lot Size</span><span class='dval'>{lot_size} {lot_unit}</span></div>
@@ -1296,9 +1354,9 @@ def main():
             tdf['Action'] = tdf['signal'].map({1:'🟢 BUY',-1:'🔴 SELL'})
             tdf['Result'] = tdf['outcome'].map({'win':'✅ WIN','loss':'❌ LOSS'})
             tdf['time']   = pd.to_datetime(tdf['time']).dt.strftime('%Y-%m-%d %H:%M IST')
-            show_cols = ['time','Action','entry','sl','tp1','Result','pnl','equity']
+            show_cols = ['time','Action','entry','lots','sl','tp1','Result','pnl','equity']
             tdf_show  = tdf[show_cols].rename(columns={
-                'time':'Time (IST)','entry':'Entry ₹','sl':'SL ₹','tp1':'TP1 ₹','pnl':'P&L ₹','equity':'Running Equity ₹'
+                'time':'Time (IST)','entry':'Entry ₹','lots':'Lots','sl':'SL ₹','tp1':'TP1 ₹','pnl':'P&L ₹','equity':'Running Equity ₹'
             }).iloc[::-1]
             st.dataframe(tdf_show, use_container_width=True, column_config={
                 'Entry ₹':          st.column_config.NumberColumn(format="₹%.2f"),
@@ -1309,6 +1367,116 @@ def main():
             })
     else:
         st.info("Insufficient completed signals in the current window for backtest statistics.")
+
+    # ── QUANT RISK LAB ────────────────────────
+    st.markdown("<hr style='border:1px solid #e2e8f0;margin:24px 0 12px'>", unsafe_allow_html=True)
+    st.markdown("### 🔬 Quant Risk Lab")
+    st.markdown(
+        "<p style='color:#64748b;font-size:12px;margin-top:-8px'>"
+        "Nothing here guarantees future profit — it's a more rigorous way to size positions and see "
+        "the range of outcomes this backtested edge could plausibly produce, instead of trusting one curve.</p>",
+        unsafe_allow_html=True)
+
+    if not bt:
+        st.info("Run a strategy with completed backtest trades to unlock the Quant Risk Lab.")
+    else:
+        trade_df_raw = bt['trade_df']
+
+        # ── 1. Cost-Adjusted Performance ─────────
+        st.markdown("<div class='section-header accent'>💸 Cost-Adjusted Performance</div>", unsafe_allow_html=True)
+        if apply_costs:
+            net_rows = []
+            for _, r in trade_df_raw.iterrows():
+                costs = apply_transaction_costs(r['pnl'], r['entry'], int(r['lots']), lot_size,
+                                                 brokerage_per_lot=brokerage_per_lot, stt_rate=stt_pct, slippage_pct=slippage_pct)
+                net_rows.append(costs['net_pnl'])
+            net_pnl_series = pd.Series(net_rows)
+            gross_total = trade_df_raw['pnl'].sum()
+            net_total   = net_pnl_series.sum()
+            net_wins    = (net_pnl_series > 0).sum()
+            net_win_rate = net_wins / len(net_pnl_series) * 100
+            total_cost  = gross_total - net_total
+
+            cc1, cc2, cc3, cc4 = st.columns(4)
+            cc1.metric("Gross P&L", f"₹{gross_total:,.0f}")
+            cc2.metric("Est. Total Costs", f"-₹{total_cost:,.0f}")
+            cc3.metric("Net P&L (after costs)", f"₹{net_total:,.0f}", f"{(net_total-gross_total):,.0f}")
+            cc4.metric("Net Win Rate", f"{net_win_rate:.1f}%")
+            if total_cost > abs(gross_total) * 0.15:
+                st.warning("⚠️ Estimated costs eat more than 15% of gross profit — at this trade frequency, real brokerage/slippage materially erodes the edge. Worth confirming your actual broker's rates against these assumptions.", icon="⚠️")
+        else:
+            st.caption("Cost netting is off — enable '💸 Transaction Cost Assumptions → Net the backtest against costs' in the sidebar to see this.")
+
+        # ── 2. Time-Sliced Stability Check ───────
+        st.markdown("<div class='section-header accent'>📈 Time-Sliced Stability Check</div>", unsafe_allow_html=True)
+        st.caption("Splits the backtest into contiguous chronological windows — NOT classic walk-forward optimization (there are no parameters here to re-fit per window), just an honest check for whether the edge persists over time or was concentrated in one lucky stretch.")
+        if run_stability_check:
+            windows = time_sliced_stability(trade_df_raw, n_windows=n_windows, time_col='time', pnl_col='pnl')
+            if windows:
+                wdf = pd.DataFrame(windows)
+                wdf['start'] = pd.to_datetime(wdf['start']).dt.strftime('%Y-%m-%d')
+                wdf['end']   = pd.to_datetime(wdf['end']).dt.strftime('%Y-%m-%d')
+                wdf_show = wdf.rename(columns={
+                    'window':'Window', 'start':'From', 'end':'To', 'trades':'Trades',
+                    'win_rate':'Win Rate %', 'profit_factor':'Profit Factor',
+                    'expectancy':'Expectancy ₹', 'net_pnl':'Net P&L ₹'
+                })
+                st.dataframe(wdf_show, use_container_width=True, hide_index=True, column_config={
+                    'Win Rate %':    st.column_config.NumberColumn(format="%.1f%%"),
+                    'Profit Factor': st.column_config.NumberColumn(format="%.2f"),
+                    'Expectancy ₹':  st.column_config.NumberColumn(format="₹%.0f"),
+                    'Net P&L ₹':     st.column_config.NumberColumn(format="₹%.0f"),
+                })
+                first_pf, last_pf = windows[0]['profit_factor'], windows[-1]['profit_factor']
+                if last_pf < 1.0 <= first_pf:
+                    st.warning(f"⚠️ Profit factor dropped from {first_pf:.2f} in the earliest window to {last_pf:.2f} in the most recent one — the edge may be decaying as conditions change. Don't treat the full-period average as a stable expectation.", icon="⚠️")
+                elif min(w['profit_factor'] for w in windows) < 0.8:
+                    st.info("ℹ️ At least one window had a profit factor well below 1.0 — this edge isn't uniformly profitable across time, even if the full-period total looks good.", icon="ℹ️")
+                else:
+                    st.success("✅ Profit factor stayed reasonably consistent across all windows — some evidence this isn't just one lucky stretch (still only one asset's history, though).", icon="✅")
+            else:
+                st.info(f"Need at least {n_windows * 5} completed trades to split into {n_windows} meaningful windows — currently have {len(trade_df_raw)}.")
+        else:
+            st.caption("Enable 'Time-Sliced Stability Check' in the sidebar to see this.")
+
+        # ── 3. Monte Carlo Risk-of-Ruin ──────────
+        st.markdown("<div class='section-header accent'>🎲 Monte Carlo Risk-of-Ruin</div>", unsafe_allow_html=True)
+        st.caption("Bootstrap-resamples your realized trade sequence thousands of times — your actual backtest is just one possible ordering of these same trades. Shows the range of equity paths and drawdowns that plausibly follow from this edge.")
+        if run_monte_carlo:
+            mc = monte_carlo_bootstrap(trade_df_raw['pnl'], start_equity=capital_inr, n_sims=n_sims, ruin_dd_pct=40.0)
+            if mc.get("usable"):
+                mc1, mc2, mc3, mc4 = st.columns(4)
+                mc1.metric("P(Profitable)", f"{mc['prob_profit_pct']:.1f}%")
+                mc2.metric("P(Drawdown > 40%)", f"{mc['prob_ruin_pct']:.1f}%")
+                mc3.metric("Median Final Equity", f"₹{mc['median_final_equity']:,.0f}")
+                mc4.metric("5th–95th Pctile Equity", f"₹{mc['p5_final_equity']:,.0f} – ₹{mc['p95_final_equity']:,.0f}")
+
+                fan_fig = go.Figure()
+                x_axis = list(range(len(mc['percentile_curves'][50])))
+                band_color = "rgba(37,99,235,.12)" if _THEME == "Light" else "rgba(88,166,255,.15)"
+                fan_fig.add_trace(go.Scatter(x=x_axis, y=mc['percentile_curves'][95], line=dict(width=0), showlegend=False, hoverinfo='skip'))
+                fan_fig.add_trace(go.Scatter(x=x_axis, y=mc['percentile_curves'][5], line=dict(width=0), fill='tonexty', fillcolor=band_color, name='5th–95th percentile', hoverinfo='skip'))
+                fan_fig.add_trace(go.Scatter(x=x_axis, y=mc['percentile_curves'][75], line=dict(width=0), showlegend=False, hoverinfo='skip'))
+                fan_fig.add_trace(go.Scatter(x=x_axis, y=mc['percentile_curves'][25], line=dict(width=0), fill='tonexty', fillcolor=band_color, name='25th–75th percentile', hoverinfo='skip'))
+                fan_fig.add_trace(go.Scatter(x=x_axis, y=mc['percentile_curves'][50], line=dict(color='#2563eb', width=2.5), name='Median path'))
+                fan_fig.add_hline(y=capital_inr, line=dict(color='#94a3b8', width=1, dash='dot'), annotation_text="Starting capital")
+                fan_fig.update_layout(
+                    template=PALETTE['plot_template'], plot_bgcolor=PALETTE['plot_bg'], paper_bgcolor=PALETTE['plot_bg'],
+                    height=380 if _MOBILE else 420, margin=dict(l=10, r=10, t=10, b=10),
+                    font=dict(family="IBM Plex Mono", color=PALETTE['plot_font']),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    xaxis_title="Trade #", yaxis_title="Equity (₹)"
+                )
+                fan_fig.update_xaxes(showgrid=True, gridcolor=PALETTE['plot_grid'])
+                fan_fig.update_yaxes(showgrid=True, gridcolor=PALETTE['plot_grid'], tickprefix="₹")
+                st.plotly_chart(fan_fig, use_container_width=True, config={"responsive": True, "displaylogo": False})
+
+                if mc['prob_ruin_pct'] > 10:
+                    st.warning(f"⚠️ {mc['prob_ruin_pct']:.1f}% of simulated paths hit a 40%+ drawdown at some point — this edge, at this position size, carries meaningful risk-of-ruin. Consider reducing risk-per-trade.", icon="⚠️")
+            else:
+                st.info(mc.get("reason", "Not enough completed trades for a Monte Carlo simulation."))
+        else:
+            st.caption("Enable 'Monte Carlo Risk-of-Ruin' in the sidebar to see this.")
 
     # ── SIGNAL LEDGER ─────────────────────────
     st.markdown("<hr style='border:1px solid #e2e8f0;margin:24px 0 12px'>", unsafe_allow_html=True)
