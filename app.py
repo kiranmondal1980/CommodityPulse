@@ -226,10 +226,34 @@ div[data-testid="metric-container"] > div:nth-child(2) {{
 }}
 
 section[data-testid="stSidebar"] {{ background:#0d1117; border-right:1px solid #21262d; }}
+/* Force light text for plain sidebar copy (labels, headers, paragraphs) —
+   but NOT elements carrying our own semantic badge/pill/card classes, which
+   already set their own (often light-background/dark-text) colors on
+   purpose. The previous version of this rule had no exclusions, so it was
+   overriding the MCX status pill's dark-red text to near-white, making it
+   invisible against its own light pink background. */
 section[data-testid="stSidebar"] h3, section[data-testid="stSidebar"] label,
-section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] span,
-section[data-testid="stSidebar"] div {{ color:#e6edf3 !important; font-family:'IBM Plex Mono',monospace !important; }}
-section[data-testid="stSidebar"] .stSelectbox>div>div {{ background:#161b22; border:1px solid #30363d; }}
+section[data-testid="stSidebar"] p:not(.strat-info *),
+section[data-testid="stSidebar"] span:not(.mkt-open):not(.mkt-pre):not(.mkt-closed):not(.strat-badge):not(.strat-info *),
+section[data-testid="stSidebar"] div:not(.mkt-open):not(.mkt-pre):not(.mkt-closed):not(.strat-info):not(.strat-info *)
+    {{ color:#e6edf3 !important; font-family:'IBM Plex Mono',monospace !important; }}
+
+/* Selectbox / dropdown — targeted multiple ways since Streamlit's internal
+   DOM structure for these shifts between versions; the previous single
+   selector (.stSelectbox>div>div) apparently isn't matching the deployed
+   version, so the background stayed light while text got forced pale by
+   the rule above — pale text on a light background reads as "invisible."
+   Belt-and-suspenders: hit it via data-testid, data-baseweb, and the old
+   class-based path together. */
+section[data-testid="stSidebar"] [data-testid="stSelectbox"] > div > div,
+section[data-testid="stSidebar"] [data-baseweb="select"] > div,
+section[data-testid="stSidebar"] .stSelectbox>div>div {{
+    background:#161b22 !important; border:1px solid #30363d !important;
+}}
+section[data-testid="stSidebar"] [data-testid="stSelectbox"] *,
+section[data-testid="stSidebar"] [data-baseweb="select"] * {{
+    color:#e6edf3 !important;
+}}
 section[data-testid="stSidebar"] button {{ transition: transform .15s ease, box-shadow .15s ease; }}
 section[data-testid="stSidebar"] button:hover {{ transform: translateY(-1px); box-shadow:0 4px 14px rgba(37,99,235,.25); }}
 
