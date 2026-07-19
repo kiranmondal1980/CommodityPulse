@@ -224,6 +224,29 @@ div[data-testid="metric-container"] > div:nth-child(2) {{
     background:#fef3c7; border:1px solid #f59e0b; border-radius:8px;
     padding:8px 14px; font-size:12px; color:#92400e; margin-bottom:10px;
 }}
+.stale-banner {{
+    background:#fee2e2; border:1px solid #F23645; border-radius:8px;
+    padding:10px 16px; font-size:13px; color:#991b1b; margin-bottom:10px;
+    font-weight:600;
+}}
+.fresh-pill {{
+    display:inline-block; background:#dcfce7; color:#166534; border:1px solid #86efac;
+    border-radius:20px; padding:3px 12px; font-size:11px; font-weight:700;
+    font-family:'IBM Plex Mono',monospace;
+}}
+.stale-pill {{
+    display:inline-block; background:#fee2e2; color:#991b1b; border:1px solid #fca5a5;
+    border-radius:20px; padding:3px 12px; font-size:11px; font-weight:700;
+    font-family:'IBM Plex Mono',monospace;
+}}
+.ticket-box {{
+    background:#0d1117; border:1px solid #30363d; border-radius:12px;
+    padding:18px 20px; font-family:'IBM Plex Mono',monospace; font-size:13px;
+    color:#e6edf3; line-height:1.85; margin:10px 0;
+}}
+.ticket-box .t-head {{ color:#58a6ff; font-weight:700; font-size:14px; margin-bottom:8px; }}
+.ticket-box .t-buy  {{ color:#3fb950; font-weight:700; }}
+.ticket-box .t-sell {{ color:#f85149; font-weight:700; }}
 
 section[data-testid="stSidebar"] {{ background:#0d1117; border-right:1px solid #21262d; }}
 /* Force light text for plain sidebar copy (labels, headers, paragraphs) —
@@ -356,12 +379,42 @@ ASSETS = {
 
 MCX_DUTY = {'GC=F':1.15,'SI=F':1.15,'CL=F':1.0,'BZ=F':1.0,'NG=F':1.0}
 
+# Actual MCX trading symbols — what you'd type into Kite/Dhan/Upstox's
+# instrument search. Only meaningful for the "Indian MCX" region; the
+# "Global Proxy" region isn't a real tradeable MCX instrument, so the
+# execution ticket is suppressed there (see build_execution_ticket()).
+MCX_SYMBOL = {
+    'GC=F': 'GOLD',          # or GOLDM for the mini/smaller lot
+    'SI=F': 'SILVER',        # or SILVERM
+    'CL=F': 'CRUDEOIL',      # or CRUDEOILM
+    'NG=F': 'NATURALGAS',
+}
+
 TIMEFRAMES = {
     "15m": {"interval":"15m","higher":"1h", "daily":"1d"},
     "1h":  {"interval":"1h", "higher":"4h", "daily":"1d"},
     "4h":  {"interval":"90m","higher":"1d", "daily":"1d"},
     "1d":  {"interval":"1d", "higher":"1wk","daily":"1wk"},
 }
+
+# ── DATA FRESHNESS ─────────────────────────────────────────────
+# Minutes represented by each Yahoo interval string — used to judge whether
+# the last fetched candle is "on time" or stale. Commodity feeds (esp.
+# Natural Gas) are known to lag or gap on Yahoo's intraday granularity, and
+# nothing in the UI previously surfaced that — a stale print was shown with
+# the same visual confidence as a live one. STALE_MULTIPLIER = 2.0 means:
+# flag as stale once the last candle is more than 2x its own interval old.
+INTERVAL_MINUTES = {"15m": 15, "1h": 60, "90m": 90, "1d": 1440, "1wk": 10080}
+STALE_MULTIPLIER = 2.0
+
+def check_data_freshness(df: pd.DataFrame, interval: str):
+    """Returns (age_minutes, is_stale, expected_minutes) for the last candle."""
+    last_ts = df.index[-1]
+    now = datetime.now(IST)
+    age_min = (now - last_ts).total_seconds() / 60.0
+    expected = INTERVAL_MINUTES.get(interval, 15)
+    is_stale = age_min > expected * STALE_MULTIPLIER
+    return age_min, is_stale, expected
 
 # ─────────────────────────────────────────────────────────────
 # MCX MARKET HOURS
@@ -723,6 +776,50 @@ def dual_tp(entry, sl, signal):
     else:           return entry - 1.5 * risk, entry - 3.0 * risk
 
 # ─────────────────────────────────────────────────────────────
+# BROKER EXECUTION TICKET
+# ─────────────────────────────────────────────────────────────
+def build_execution_ticket(region, asset_name, ticker, signal, entry, sl, tp1, tp2,
+                            lots, lot_size, lot_unit, timeframe, strategy_name,
+                            is_stale, data_age_min):
+    """
+    Plain-text, copy-paste-ready order ticket matching the exact fields a
+    Zerodha Kite / Dhan / Upstox order form asks for. This is the single
+    biggest gap between "the app shows a good signal" and "the trader
+    executes it correctly" — translating a dashboard number into the exact
+    symbol + qty + SL/TP a broker app expects removes a manual, error-prone
+    step (and the guide explicitly tells users to do this by hand today).
+    """
+    if region != "Indian MCX (in INR)" or ticker not in MCX_SYMBOL:
+        return None  # Global Proxy region isn't a tradeable MCX instrument
+
+    symbol   = MCX_SYMBOL[ticker]
+    dir_str  = "BUY (LONG)" if signal >= 0 else "SELL (SHORT)"
+    qty      = lots * lot_size
+    stale_note = (
+        f"\n⚠️  DATA IS {data_age_min:.0f} MIN OLD — VERIFY LTP ON BROKER TERMINAL BEFORE PLACING ANY ORDER.\n"
+        if is_stale else ""
+    )
+    return (
+        f"═══════════════════════════════\n"
+        f"  CommodityPulse Pro — Execution Ticket\n"
+        f"═══════════════════════════════\n"
+        f"{stale_note}"
+        f"Symbol (MCX):   {symbol}\n"
+        f"Action:         {dir_str}\n"
+        f"Quantity:       {lots} lot(s) = {qty} {lot_unit}\n"
+        f"Entry (Limit):  ₹{entry:,.2f}\n"
+        f"Stop Loss:      ₹{sl:,.2f}   (place as SL-M immediately after entry)\n"
+        f"Target 1:       ₹{tp1:,.2f}  (1.5R — GTT, exit 50-60% here)\n"
+        f"Target 2:       ₹{tp2:,.2f}  (3R — let remainder run, SL to breakeven after TP1)\n"
+        f"Timeframe:      {timeframe}\n"
+        f"Strategy:       {strategy_name}\n"
+        f"Generated:      {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}\n"
+        f"═══════════════════════════════\n"
+        f"Not financial advice. Confirm contract month/expiry and current\n"
+        f"margin on your broker app before placing this order.\n"
+    )
+
+# ─────────────────────────────────────────────────────────────
 # LIVE BACKTESTER  (works for all strategies)
 # ─────────────────────────────────────────────────────────────
 def run_backtest(df, atr_col, lot_size, capital_start, risk_pct):
@@ -1013,6 +1110,21 @@ def main():
         st.error("⚠️ Data unavailable after retries. Wait 60s and refresh.")
         st.stop()
 
+    # ── DATA FRESHNESS CHECK ─────────────────
+    # Commodity feeds (Natural Gas especially) can lag or gap on Yahoo's
+    # intraday granularity — silently showing that stale print with the same
+    # visual confidence as a live one is how a trader ends up executing off
+    # a number that's 15-20% away from the real MCX quote. Surface it instead.
+    data_age_min, is_stale, expected_min = check_data_freshness(df, tf_params['interval'])
+    last_candle_str = df.index[-1].strftime('%H:%M:%S IST')
+    if is_stale:
+        st.markdown(
+            f"<div class='stale-banner'>🔴 STALE DATA WARNING — Last candle is "
+            f"<b>{data_age_min:.0f} min old</b> (expected ~{expected_min} min for the {timeframe} feed). "
+            f"Last update: {last_candle_str}. <b>Do not execute off this price</b> — verify against "
+            f"your broker terminal (Kite/Dhan/Upstox) or MCX website before placing any order.</div>",
+            unsafe_allow_html=True)
+
     # ── AUTO REGIME ROUTER ───────────────────
     # Resolve which strategy to run *before* indicators are applied below.
     # Hysteresis is kept per (region, asset, timeframe) across reruns via
@@ -1157,6 +1269,13 @@ def main():
     # ── MARKET DATA METRICS ──────────────────
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("<div class='section-header accent'>📊 Market Data</div>", unsafe_allow_html=True)
+    freshness_pill = (
+        f"<span class='stale-pill'>🔴 STALE · {last_candle_str} · {data_age_min:.0f} min old</span>"
+        if is_stale else
+        f"<span class='fresh-pill'>🟢 LIVE · {last_candle_str} · {data_age_min:.0f} min old</span>"
+    )
+    st.markdown(freshness_pill, unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
     mc1,mc2,mc3,mc4 = st.columns(4)
     mc1.metric("💰 Price (INR)",      f"₹{curr['Close']:,.2f}", f"{chg_pct:+.2f}%")
     mc2.metric("📈 Trend Bias",       active_trend)
@@ -1251,6 +1370,26 @@ def main():
                 <div class='drow'><span class='dlabel'>Risk as % of Capital</span>
                     <span class='dval {"g" if rp_actual<2 else "a" if rp_actual<3 else "r"}'>{rp_actual:.2f}%</span></div>
             </div>""", unsafe_allow_html=True)
+
+        # ── EXECUTION TICKET ──────────────────
+        st.markdown("<div class='section-header accent' style='margin-top:18px'>🎫 Broker Execution Ticket</div>", unsafe_allow_html=True)
+        ticket_signal = latest_signal if latest_signal != 0 else (1 if active_trend.startswith("BULLISH") else -1)
+        ticket_text = build_execution_ticket(
+            region=region, asset_name=asset_name, ticker=ticker,
+            signal=ticket_signal, entry=float(curr['Close']), sl=sl_price, tp1=tp1, tp2=tp2,
+            lots=lots, lot_size=lot_size, lot_unit=lot_unit, timeframe=timeframe,
+            strategy_name=strategy.name, is_stale=is_stale, data_age_min=data_age_min,
+        )
+        if ticket_text:
+            if is_stale:
+                st.markdown(
+                    "<div class='stale-banner'>🔴 Data is stale — the ticket below still generates, "
+                    "but confirm the live price on your broker app before placing it.</div>",
+                    unsafe_allow_html=True)
+            st.code(ticket_text, language=None)
+            st.caption("Copy this directly — symbol matches MCX's exact instrument search on Kite/Dhan/Upstox. Always confirm the current front-month contract/expiry before placing.")
+        else:
+            st.caption("Switch Market Region to 'Indian MCX (in INR)' to get a broker-ready execution ticket for this instrument.")
 
     # ── MAIN CHART ───────────────────────────
     st.markdown("<hr style='border:1px solid #e2e8f0;margin:24px 0 12px'>", unsafe_allow_html=True)
