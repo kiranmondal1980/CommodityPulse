@@ -343,7 +343,11 @@ ASSETS = {
         'Silver':          {'ticker':'SI=F','fallback':None,   'emoji':'⚪','lot_size':1,  'lot_unit':'kg',     'mcx_lot':30},
     },
     "Indian MCX (in INR)": {
-        'Crude Oil (MCX)':   {'ticker':'BZ=F','fallback':'CL=F','emoji':'🛢️','lot_size':100,'lot_unit':'barrels','mcx_lot':100},
+        # MCX Crude Oil futures track CME/NYMEX WTI, not Brent — CL=F is the
+        # correct primary proxy. BZ=F (Brent) is kept only as a fallback, since
+        # WTI/Brent routinely diverge by $3-6/barrel and using Brent as primary
+        # was producing a persistent price mismatch vs actual MCX quotes.
+        'Crude Oil (MCX)':   {'ticker':'CL=F','fallback':'BZ=F','emoji':'🛢️','lot_size':100,'lot_unit':'barrels','mcx_lot':100},
         'Natural Gas (MCX)': {'ticker':'NG=F','fallback':None,  'emoji':'🔥','lot_size':10, 'lot_unit':'mmBtu',  'mcx_lot':1250},
         'Gold (MCX)':        {'ticker':'GC=F','fallback':None,  'emoji':'🟡','lot_size':10, 'lot_unit':'grams',  'mcx_lot':100},
         'Silver (MCX)':      {'ticker':'SI=F','fallback':None,  'emoji':'⚪','lot_size':1,  'lot_unit':'kg',     'mcx_lot':30},
