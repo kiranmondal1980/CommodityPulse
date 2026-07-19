@@ -1,16 +1,26 @@
 name: 24/7 Quant Bot
 on:
-  schedule:
-    - cron: '*/15 * * * *' # Runs every 15 minutes automatically
+  # ⚠️ Cron schedule disabled — this workflow is nearly identical to
+  # main.yml and was running on the SAME */15 * * * * schedule. Two
+  # workflows scanning in parallel means two separate ephemeral checkouts
+  # with two separate copies of last_alerts.json, so the duplicate guard
+  # in main.py can't see across them — a real candidate for the duplicate/
+  # conflicting alerts you were seeing. Keeping this as workflow_dispatch
+  # only (manual run) until you decide whether to delete it or keep it as
+  # a distinct scanner. If you want this one live too, give it its own
+  # separate active_strategy / asset scope in main.py, don't run the same
+  # config from both.
   workflow_dispatch:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Set up Python
-        uses: actions/setup-python@v4
-        with: 
+        uses: actions/setup-python@v5
+        with:
           python-version: '3.12'
       - name: Install dependencies
         run: pip install yfinance pandas pandas-ta requests
@@ -19,3 +29,12 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python main.py
+      - name: Commit state files
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add regime_state.json last_alerts.json open_positions.json 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "chore: update bot state [skip ci]"
+          git pull --rebase --autostash || true
+          git push || echo "Nothing to push or push failed — check repo permissions."
