@@ -4,14 +4,21 @@ CommodityPulse Pro — Phase 5 Enterprise Bot (main.py)
 Background scanner for GitHub Actions / cron execution.
 
 Strategies (set PARAMS["active_strategy"]):
+  "auto"      → Auto Regime-Adaptive Router (RECOMMENDED — same router app.py uses)
   "trend"     → Trend Confluence   (EMA 9/21/200 + RSI, best for trending markets)
   "reversion" → Mean Reversion     (Bollinger Band Fade + RSI, best for sideways)
   "breakout"  → Volatility Breakout (Donchian Channels + ADX + Volume, best for explosive moves)
-  "auto"      → Regime-Adaptive Router (regime_engine.py) — classifies ADX +
-                Donchian breakout + volume every scan, per ticker, and picks
-                whichever of the three strategies above fits current conditions.
-                Choice persists across cron runs via regime_state.json so the
-                bot doesn't whipsaw across the ADX 20-25 transition zone.
+
+In "auto" mode, each asset's strategy is resolved independently every scan from its
+own live ADX / Donchian breakout status / volume, exactly like app.py's router. The
+resolved strategy per asset is persisted to PARAMS["regime_state_file"] (default
+regime_state.json) so the ADX 20-25 transition zone doesn't whipsaw between runs —
+this mirrors app.py's session_state hysteresis, just file-backed instead of in-memory.
+
+⚠️ IMPORTANT: GitHub Actions runners are ephemeral — regime_state.json (and
+last_alerts.json / open_positions.json) only "persist" across runs if your workflow
+commits them back to the repo after each run. Without a commit-back step, hysteresis
+and the duplicate guard silently reset every 15 minutes. See bot.yml/main.yml.
 
 All prices in INR (₹) · All times in IST · MCX Calibrated (15% duty)
 Dual Take-Profit (1.5R / 3R) · ATR Stop-Loss · IST Market Hours Filter
@@ -25,15 +32,12 @@ import requests
 import os
 import time
 import json
-import math
 import logging
 import pytz
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
-
 from regime_engine import compute_regime_probe, classify_regime
-from quant_lab import rolling_correlation, correlated_risk_check
 
 # ──────────────────────────────────────────────────────────────
 # LOGGING & TIMEZONE
@@ -57,14 +61,9 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 # ──────────────────────────────────────────────────────────────
 PARAMS = {
     # ─── Strategy selector ───────────────────────────────────
-    # Options: "trend" | "reversion" | "breakout" | "auto"
+    # Options: "auto" | "trend" | "reversion" | "breakout"
+    # "auto" runs the same regime router as app.py — resolved per-asset, per-scan.
     "active_strategy": "auto",
-
-    # ─── Auto regime router (only used when active_strategy == "auto") ──
-    "regime_adx_trend_min": 25.0,   # ADX >= this -> Trend Confluence
-    "regime_adx_range_max": 20.0,   # ADX <  this -> Mean Reversion
-    "regime_vol_ratio":     1.1,    # Volume > MA20 * this, for breakout confirmation
-    "regime_state_file":    "regime_state.json",
 
     # ─── Timeframes ──────────────────────────────────────────
     "base_interval": "15m",   # Scanning timeframe
@@ -104,35 +103,28 @@ PARAMS = {
     "tp2_rr":      3.0,
 
     # ─── Operational ─────────────────────────────────────────
-    "state_file":   "last_alerts.json",
+    "state_file":        "last_alerts.json",
+    "regime_state_file": "regime_state.json",   # per-ticker Auto Router hysteresis
     "fetch_sleep":  2,
     "max_retries":  3,
-    "import_duty":  1.15,   # 15% Indian import duty for Gold/Silver
-
-    # ─── Portfolio Risk Cap (correlation-aware) ──────────────
-    # The per-trade 2%-style rule doesn't protect you if two correlated
-    # assets (e.g. Gold + Silver) both fire in the same direction at once —
-    # that's not two independent 2% bets, it's one bigger correlated bet.
-    # This caps the COMBINED risk of open positions in the same correlated
-    # group, in addition to (not instead of) each trade's own sizing.
-    "portfolio_capital_inr":    500_000,
-    "position_risk_pct":        2.0,     # fixed % used to size the bot's own lots (Kelly needs a live backtest, which only the Streamlit terminal runs)
-    "max_group_risk_pct":       4.0,     # cap on combined risk within a correlated group
-    "correlation_lookback_days": 60,
-    "correlation_threshold":    0.6,     # |corr| >= this counts as "correlated"
-    "position_stale_hours":     72,      # auto-expire an open position that never hits SL/TP1 (data gaps, etc.)
-    "open_positions_file":      "open_positions.json",
+    "import_duty":  1.15,   # 15% Indian import duty for Gold/Silver (confirmed current as of 2026)
 }
 
 # ──────────────────────────────────────────────────────────────
 # ASSET UNIVERSE (MCX CALIBRATED)
 # ──────────────────────────────────────────────────────────────
 ASSETS = {
-    "XAUUSD=X": {"name": "Gold (MCX)",    "emoji": "🟡", "type": "gold",   "lot_size": 10},
-    "XAGUSD=X": {"name": "Silver (MCX)",  "emoji": "⚪", "type": "silver", "lot_size": 1},
-    "BZ=F":     {"name": "Crude Oil MCX", "emoji": "🛢️", "type": "comm",   "lot_size": 100},
-    "NG=F":     {"name": "Natural Gas",   "emoji": "🔥", "type": "comm",   "lot_size": 10},
-    "BTC-USD":  {"name": "Bitcoin",       "emoji": "₿",  "type": "crypto", "lot_size": 1},
+    # NOTE: Gold/Silver use COMEX futures (GC=F / SI=F) to match app.py's proxy —
+    # previously this bot used XAUUSD=X/XAGUSD=X (a spot FX-style feed) which drifts
+    # from app.py's dashboard price for the same instrument at the same moment.
+    "GC=F":     {"name": "Gold (MCX)",    "emoji": "🟡", "type": "gold"},
+    "SI=F":     {"name": "Silver (MCX)",  "emoji": "⚪", "type": "silver"},
+    # MCX Crude Oil futures track CME/NYMEX WTI, NOT Brent — using BZ=F (Brent) here
+    # was a real bug: WTI/Brent routinely diverge by $3-6/barrel, which propagates
+    # straight through the INR conversion into a persistent price mismatch vs MCX.
+    "CL=F":     {"name": "Crude Oil MCX", "emoji": "🛢️", "type": "comm"},
+    "NG=F":     {"name": "Natural Gas",   "emoji": "🔥", "type": "comm"},
+    "BTC-USD":  {"name": "Bitcoin",       "emoji": "₿",  "type": "crypto"},
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -188,80 +180,21 @@ def _mark_alerted(ticker: str, candle_ts: str, signal: str) -> None:
 def _already_alerted(ticker: str, candle_ts: str, signal: str) -> bool:
     return _load_state().get(f"{ticker}_{signal}") == candle_ts
 
-# ──────────────────────────────────────────────────────────────
-# REGIME STATE (persists the auto-router's per-ticker strategy choice
-# across cron runs, so the transition-zone hysteresis in regime_engine
-# actually holds between the 15-min scans instead of resetting each time)
-# ──────────────────────────────────────────────────────────────
+# ── Auto Regime Router state (per-ticker hysteresis across scans) ──────────
 REGIME_STATE_FILE = Path(__file__).parent / PARAMS["regime_state_file"]
 
 def _load_regime_state() -> dict:
     try:    return json.loads(REGIME_STATE_FILE.read_text())
     except: return {}
 
-def _save_regime_choice(ticker: str, strategy_key: str) -> None:
+def _save_regime_state(ticker: str, strategy_key: str) -> None:
     state = _load_regime_state()
     state[ticker] = strategy_key
     try: REGIME_STATE_FILE.write_text(json.dumps(state, indent=2))
     except Exception as e: log.warning(f"Regime state write failed: {e}")
 
-# ──────────────────────────────────────────────────────────────
-# OPEN POSITION TRACKING (for the correlation-aware portfolio risk cap)
-# The bot fires alerts but never previously tracked whether that trade was
-# still "live." Without knowing what's currently open, a correlation cap
-# has nothing to sum risk across. This keeps a lightweight open-position
-# ledger: entry/SL/TP1/direction/risk, closed out on next scan once price
-# breaches SL or TP1, and auto-expired after position_stale_hours so a
-# data gap can't permanently block future signals in that group.
-# ──────────────────────────────────────────────────────────────
-OPEN_POSITIONS_FILE = Path(__file__).parent / PARAMS["open_positions_file"]
-
-def _load_open_positions() -> dict:
-    try:    return json.loads(OPEN_POSITIONS_FILE.read_text())
-    except: return {}
-
-def _save_open_positions(positions: dict) -> None:
-    try: OPEN_POSITIONS_FILE.write_text(json.dumps(positions, indent=2, default=str))
-    except Exception as e: log.warning(f"Open-position state write failed: {e}")
-
-def _expire_stale_positions() -> None:
-    """Clears any open position older than position_stale_hours with no
-    SL/TP1 hit recorded — guards against a data gap permanently blocking
-    future signals in that correlation group."""
-    positions = _load_open_positions()
-    now = datetime.now(IST)
-    changed = False
-    for ticker in list(positions.keys()):
-        opened_ts = datetime.fromisoformat(positions[ticker]["opened_ts"])
-        age_hours = (now - opened_ts).total_seconds() / 3600
-        if age_hours > PARAMS["position_stale_hours"]:
-            log.info(f"  ⏱️ Open position on {ticker} expired after {age_hours:.0f}h with no SL/TP1 hit — clearing from risk pool.")
-            del positions[ticker]; changed = True
-    if changed:
-        _save_open_positions(positions)
-
-def _check_and_close_position(ticker: str, df_raw: pd.DataFrame) -> None:
-    """Closes out ticker's open position (if any) if the latest bar's
-    High/Low breached its SL or TP1. Compares in NATIVE units (same as
-    df_raw), since sl/tp1 are stored native — not INR — for exactly this
-    reason. Called inline, right after each ticker's data download."""
-    positions = _load_open_positions()
-    pos = positions.get(ticker)
-    if not pos or df_raw is None or df_raw.empty:
-        return
-
-    last = df_raw.iloc[-1]
-    hi, lo = float(last['High']), float(last['Low'])
-    direction, sl, tp1 = pos["direction"], pos["sl"], pos["tp1"]
-
-    hit_sl  = (lo <= sl) if direction == "BULLISH" else (hi >= sl)
-    hit_tp1 = (hi >= tp1) if direction == "BULLISH" else (lo <= tp1)
-
-    if hit_sl or hit_tp1:
-        outcome = "TP1 hit ✅" if hit_tp1 else "SL hit 🛑"
-        log.info(f"  📤 Closing open position on {ticker} ({direction}) — {outcome}")
-        del positions[ticker]
-        _save_open_positions(positions)
+def _prior_regime_key(ticker: str) -> str | None:
+    return _load_regime_state().get(ticker)
 
 def _download(ticker: str, period: str, interval: str) -> pd.DataFrame | None:
     for attempt in range(PARAMS["max_retries"]):
@@ -547,52 +480,31 @@ def get_htf_bias(ticker: str) -> int:
 # RISK & DUAL-TP CALCULATION
 # ──────────────────────────────────────────────────────────────
 def calculate_trade_levels(sig: dict, info: dict) -> dict:
-    """Return entry, SL, TP1, TP2 in INR — plus native-unit (pre-conversion)
-    SL/TP1, needed because the position tracker compares against df_raw's
-    High/Low, which are in the ticker's own native currency/units, not INR."""
+    """Return entry, SL, TP1, TP2 all in INR."""
     p = PARAMS
     asset_type = info["type"]
 
     entry_inr = to_inr(sig["price"], asset_type)
     sl_dist_usd = p["sl_atr_mult"] * sig["atr"]
-    sl_native = (sig["price"] - sl_dist_usd if sig["signal"] == "BULLISH"
-                 else sig["price"] + sl_dist_usd)
-    sl_inr  = to_inr(sl_native, asset_type)
+    sl_usd = (sig["price"] - sl_dist_usd if sig["signal"] == "BULLISH"
+              else sig["price"] + sl_dist_usd)
+    sl_inr  = to_inr(sl_usd, asset_type)
 
     risk_inr = abs(entry_inr - sl_inr)
     if sig["signal"] == "BULLISH":
-        tp1_inr    = entry_inr + risk_inr * p["tp1_rr"]
-        tp2_inr    = entry_inr + risk_inr * p["tp2_rr"]
-        tp1_native = sig["price"] + sl_dist_usd * p["tp1_rr"]
+        tp1_inr = entry_inr + risk_inr * p["tp1_rr"]
+        tp2_inr = entry_inr + risk_inr * p["tp2_rr"]
     else:
-        tp1_inr    = entry_inr - risk_inr * p["tp1_rr"]
-        tp2_inr    = entry_inr - risk_inr * p["tp2_rr"]
-        tp1_native = sig["price"] - sl_dist_usd * p["tp1_rr"]
+        tp1_inr = entry_inr - risk_inr * p["tp1_rr"]
+        tp2_inr = entry_inr - risk_inr * p["tp2_rr"]
 
     return {
         "entry_inr": entry_inr,
         "sl_inr":    sl_inr,
         "tp1_inr":   tp1_inr,
         "tp2_inr":   tp2_inr,
-        "risk_inr":  risk_inr,   # per-unit-price risk distance in INR, NOT total capital at risk
-        "sl_native":  sl_native,   # same units as df_raw's High/Low — for position-close checks
-        "tp1_native": tp1_native,
+        "risk_inr":  risk_inr,
     }
-
-
-def compute_position_size(risk_per_unit_inr: float, lot_size: float, capital_inr: float, risk_pct: float) -> dict:
-    """
-    Fixed-%-of-capital lot sizing for the bot (mirrors the Streamlit
-    terminal's Fixed Risk mode). Kelly sizing isn't offered here since it
-    needs a live backtest to derive win-rate/payoff-ratio from — that only
-    the Streamlit terminal computes. This just produces an actual rupee
-    figure so the correlation risk cap below has something to sum.
-    """
-    risk_budget_inr = capital_inr * (risk_pct / 100.0)
-    risk_per_lot    = risk_per_unit_inr * lot_size
-    lots            = max(1, math.floor(risk_budget_inr / risk_per_lot)) if risk_per_lot > 0 else 1
-    actual_risk_inr = lots * risk_per_lot
-    return {"lots": lots, "actual_risk_inr": actual_risk_inr}
 
 
 # ──────────────────────────────────────────────────────────────
@@ -609,7 +521,7 @@ def send_telegram_alert(
     stars    = "⭐" * sig["score"] + "☆" * (5 - sig["score"])
     htf_text = {1: "✅ BULLISH", -1: "🔴 BEARISH", 0: "⚪ NEUTRAL"}[sig["htf_bias"]]
     dir_icon = "📈 LONG ▲" if sig["signal"] == "BULLISH" else "📉 SHORT ▼"
-    regime_line = f"🤖 Regime: {regime_reason}\n" if regime_reason else ""
+    regime_line = f"🧭 Regime: _{regime_reason}_\n" if regime_reason else ""
 
     msg = (
         f"{info['emoji']} *{info['name']}* ({ticker})\n"
@@ -642,17 +554,18 @@ def send_telegram_alert(
         log.error(f"Telegram send failed: {e}")
 
 
-def send_startup_message(strategy: BaseStrategy | None) -> None:
+def send_startup_message(is_auto: bool, strategy: BaseStrategy | None) -> None:
     """Announce which strategy/mode is running (optional — fired once per session)."""
     if not TOKEN or not CHAT_ID: return
-    if strategy is None:
-        icon, label = "🤖", "Auto (Regime-Adaptive Router)"
+    if is_auto:
+        strategy_line = "🤖 _Auto Regime-Adaptive Router_ (resolved per-asset every scan)"
     else:
         icons = {"trend": "📈", "reversion": "↔️", "breakout": "💥"}
-        icon, label = icons.get(strategy.key, "⚡"), strategy.name
+        icon  = icons.get(strategy.key, "⚡")
+        strategy_line = f"{icon} _{strategy.name}_ (fixed)"
     msg = (
         f"⚡ *CommodityPulse Pro — Phase 5 Bot Started*\n"
-        f"Active Strategy: {icon} _{label}_\n"
+        f"Active Strategy: {strategy_line}\n"
         f"Scanning: MCX + Crypto\n"
         f"Interval: Every 15 minutes\n"
         f"🕐 {datetime.now(IST).strftime('%Y-%m-%d %H:%M IST')}"
@@ -668,26 +581,6 @@ def send_startup_message(strategy: BaseStrategy | None) -> None:
 
 
 # ──────────────────────────────────────────────────────────────
-# CORRELATION MATRIX (for the portfolio risk cap)
-# ──────────────────────────────────────────────────────────────
-def build_correlation_matrix(assets: dict, lookback_days: int) -> pd.DataFrame:
-    """
-    Downloads recent daily closes for every asset in `assets` and returns a
-    pairwise return-correlation matrix (via quant_lab.rolling_correlation).
-    One extra download pass per ticker per scan — acceptable at a 15-min
-    cadence. Silently skips tickers that fail to download; the risk cap
-    treats missing correlations as "not correlated" (allow), same as any
-    other conservative default in this codebase.
-    """
-    price_series = {}
-    for ticker in assets.keys():
-        df = _download(ticker, f"{lookback_days + 10}d", "1d")
-        if df is not None and not df.empty and 'Close' in df.columns:
-            price_series[ticker] = df['Close']
-    return rolling_correlation(price_series, lookback=lookback_days)
-
-
-# ──────────────────────────────────────────────────────────────
 # MAIN EXECUTION
 # ──────────────────────────────────────────────────────────────
 def main() -> None:
@@ -695,31 +588,24 @@ def main() -> None:
         log.error("Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID environment variables.")
         return
 
-    # ── Resolve active strategy mode ────────────────────────
-    strategy_key = PARAMS.get("active_strategy", "trend").lower()
-    is_auto = strategy_key == "auto"
+    # ── Resolve strategy mode ────────────────────────────────
+    strategy_key = PARAMS.get("active_strategy", "auto").lower()
+    is_auto = (strategy_key == "auto")
+    fixed_strategy = None
+    if not is_auto:
+        if strategy_key not in STRATEGIES:
+            log.error(
+                f"Unknown strategy '{strategy_key}'. "
+                f"Valid options: ['auto'] + {list(STRATEGIES.keys())}"
+            )
+            return
+        fixed_strategy = STRATEGIES[strategy_key]
 
-    if not is_auto and strategy_key not in STRATEGIES:
-        log.error(
-            f"Unknown strategy '{strategy_key}'. "
-            f"Valid options: {list(STRATEGIES.keys()) + ['auto']}"
-        )
-        return
-
-    fixed_strategy = None if is_auto else STRATEGIES[strategy_key]
-    mode_label = "Auto (Regime-Adaptive Router)" if is_auto else fixed_strategy.name
-    log.info(f"CommodityPulse Pro — Phase 5 | Mode: [{mode_label}]")
-    send_startup_message(fixed_strategy)
-
-    # ── Portfolio risk cap setup ─────────────────────────────
-    # Clear any open position that never resolved (data gap, etc.), then
-    # build today's correlation matrix once for the whole scan — this is
-    # what lets the risk cap tell "two independent 2% bets" apart from
-    # "one bigger correlated bet wearing two tickers."
-    _expire_stale_positions()
-    corr_matrix = build_correlation_matrix(ASSETS, PARAMS["correlation_lookback_days"])
-    if corr_matrix.empty:
-        log.warning("  Correlation matrix unavailable this scan — portfolio risk cap will allow by default.")
+    log.info(
+        f"CommodityPulse Pro — Phase 5 | Mode: "
+        f"[{'🤖 AUTO Regime Router' if is_auto else fixed_strategy.name}]"
+    )
+    send_startup_message(is_auto, fixed_strategy)
 
     # ── Market hours gate ───────────────────────────────────
     mcx_open = is_mcx_open()
@@ -734,9 +620,7 @@ def main() -> None:
     for ticker, info in assets_to_scan.items():
         log.info(f"→ Scanning {info['name']} ({ticker})…")
 
-        # 1. Higher Timeframe Bias (always EMA-based for structural context,
-        #    regardless of which base strategy ends up active — this is a
-        #    deliberate architectural boundary, unrelated to regime routing)
+        # 1. Higher Timeframe Bias (always EMA-based for structural context)
         bias = get_htf_bias(ticker)
         log.info(f"  HTF bias = {bias:+d} ({'BULLISH' if bias==1 else 'BEARISH' if bias==-1 else 'NEUTRAL'})")
 
@@ -746,48 +630,33 @@ def main() -> None:
             log.warning(f"  No data for {ticker} — skipping.")
             continue
 
-        # 2a. Close out this ticker's open position (if any) before doing
-        #     anything else this cycle — keeps the risk pool accurate for
-        #     the correlation cap check further below.
-        _check_and_close_position(ticker, df_raw)
-
-        # 2b. Auto Regime Router — classify regime from raw OHLCV *before*
-        #     any strategy-specific indicators are applied, then resolve
-        #     which strategy runs for this ticker this scan. Choice is
-        #     persisted to regime_state.json so the transition-zone
-        #     hysteresis holds across separate 15-min cron invocations.
+        # 3. Resolve strategy for THIS ticker
         regime_reason = None
         if is_auto:
             try:
-                regime_state = _load_regime_state()
-                prior_key    = regime_state.get(ticker)
-                probe_df     = compute_regime_probe(df_raw.copy())
-                regime_info  = classify_regime(
-                    probe_df, prior_strategy_key=prior_key,
-                    adx_trend_min=PARAMS["regime_adx_trend_min"],
-                    adx_range_max=PARAMS["regime_adx_range_max"],
-                    vol_ratio=PARAMS["regime_vol_ratio"],
-                    confirmed_row=-2,   # last CLOSED candle, matches check_signals() below
+                prior_key = _prior_regime_key(ticker)
+                probe_df  = compute_regime_probe(df_raw.copy())
+                # confirmed_row=-2: main.py treats the last CLOSED candle as
+                # "current" (matching check_signals()' df.iloc[-2] convention),
+                # unlike app.py which uses -1 for its live-tick convention.
+                regime_info = classify_regime(probe_df, prior_strategy_key=prior_key, confirmed_row=-2)
+                strategy_key_resolved = regime_info["strategy_key"]
+                _save_regime_state(ticker, strategy_key_resolved)
+                strategy = STRATEGIES[strategy_key_resolved]
+                regime_reason = regime_info["reason"]
+                log.info(
+                    f"  🧭 Regime: {regime_info['regime']} (confidence {regime_info['confidence']}%) "
+                    f"→ {strategy.name} | {regime_reason}"
                 )
             except Exception as e:
-                log.error(f"  Regime probe error for {ticker}: {e} — defaulting to Trend Confluence.")
-                regime_info = {"regime": "UNKNOWN", "strategy_key": "trend", "confidence": 0,
-                                "reason": "Regime probe failed.", "adx": None}
-
-            active_strategy = STRATEGIES[regime_info["strategy_key"]]
-            regime_reason   = regime_info["reason"]
-            _save_regime_choice(ticker, regime_info["strategy_key"])
-            log.info(
-                f"  🤖 Regime={regime_info['regime']} (conf {regime_info['confidence']}%, "
-                f"ADX={regime_info['adx']}) → {active_strategy.name}"
-            )
-            log.info(f"     {regime_reason}")
+                log.error(f"  Regime classification failed for {ticker}: {e} — falling back to Trend Confluence.")
+                strategy = STRATEGIES["trend"]
         else:
-            active_strategy = fixed_strategy
+            strategy = fixed_strategy
 
-        # 3. Apply strategy indicators
+        # 4. Apply strategy indicators
         try:
-            df = active_strategy.apply_indicators(df_raw.copy())
+            df = strategy.apply_indicators(df_raw.copy())
         except Exception as e:
             log.error(f"  Indicator error for {ticker}: {e}")
             continue
@@ -796,20 +665,20 @@ def main() -> None:
             log.info(f"  Not enough data rows after indicators ({len(df)}) — skipping.")
             continue
 
-        # 4. Check for signal
-        sig = active_strategy.check_signals(df, bias)
+        # 5. Check for signal
+        sig = strategy.check_signals(df, bias)
         if sig is None:
-            log.info(f"  No signal for {ticker} with [{active_strategy.name}].")
+            log.info(f"  No signal for {ticker} with [{strategy.name}].")
             continue
 
         log.info(f"  🚨 Signal detected: {sig['signal']} | score={sig['score']}/5 | ADX={sig['adx']:.1f}")
 
-        # 5. Duplicate guard
+        # 6. Duplicate guard
         if _already_alerted(ticker, sig["ts"], sig["signal"]):
             log.info(f"  Duplicate — alert for this candle already sent.")
             continue
 
-        # 6. Calculate trade levels in INR
+        # 7. Calculate trade levels in INR
         levels = calculate_trade_levels(sig, info)
         log.info(
             f"  Entry ₹{levels['entry_inr']:,.2f} | "
@@ -818,35 +687,10 @@ def main() -> None:
             f"TP2 ₹{levels['tp2_inr']:,.2f}"
         )
 
-        # 6b. Portfolio risk cap — combined risk within a correlated group
-        #     (e.g. Gold + Silver both BUY at once) can quietly exceed your
-        #     per-trade 2% rule even though each trade looks fine alone.
-        lot_info = compute_position_size(levels["risk_inr"], info["lot_size"],
-                                          PARAMS["portfolio_capital_inr"], PARAMS["position_risk_pct"])
-        open_positions = _load_open_positions()
-        risk_check = correlated_risk_check(
-            ticker, sig["signal"], lot_info["actual_risk_inr"], open_positions, corr_matrix,
-            capital_inr=PARAMS["portfolio_capital_inr"], max_group_risk_pct=PARAMS["max_group_risk_pct"],
-            corr_threshold=PARAMS["correlation_threshold"])
-
-        if not risk_check["allowed"]:
-            log.info(f"  🚫 Correlation risk cap blocked this alert — {risk_check['reason']}")
-            _mark_alerted(ticker, sig["ts"], sig["signal"])  # avoid re-logging the same candle every scan
-            continue
-
-        # 7. Send Telegram alert
-        send_telegram_alert(ticker, info, sig, active_strategy.name, levels, regime_reason=regime_reason)
+        # 8. Send Telegram alert
+        send_telegram_alert(ticker, info, sig, strategy.name, levels, regime_reason=regime_reason)
         _mark_alerted(ticker, sig["ts"], sig["signal"])
-
-        # 7b. Register this as an open position (native-unit SL/TP1, so the
-        #     close-check above compares apples-to-apples against df_raw).
-        open_positions[ticker] = {
-            "direction": sig["signal"], "sl": levels["sl_native"], "tp1": levels["tp1_native"],
-            "risk_inr": lot_info["actual_risk_inr"], "lots": lot_info["lots"],
-            "opened_ts": datetime.now(IST).isoformat(),
-        }
-        _save_open_positions(open_positions)
-        log.info(f"  ✅ Alert sent for {info['name']} — {lot_info['lots']} lot(s), ₹{lot_info['actual_risk_inr']:,.0f} at risk.")
+        log.info(f"  ✅ Alert sent for {info['name']}.")
 
     log.info("Scan complete.")
 
