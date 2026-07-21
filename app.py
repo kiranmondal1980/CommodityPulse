@@ -377,7 +377,21 @@ ASSETS = {
     }
 }
 
-MCX_DUTY = {'GC=F':1.15,'SI=F':1.15,'CL=F':1.0,'BZ=F':1.0,'NG=F':1.0}
+# MCX_DUTY: the correction factor between the raw international USD benchmark
+# and the actual MCX-quoted INR price for that contract.
+#
+# For Gold/Silver this genuinely is import duty (~15%, relatively stable).
+# For Natural Gas and Crude it is NOT a duty — it's the basis gap between
+# Yahoo's Henry Hub / WTI continuous futures and MCX's own import-parity /
+# local-delivery pricing. That gap DRIFTS over time and must be periodically
+# re-checked against your broker's LTP (see the "MCX Basis Calibration"
+# sidebar panel) — do not treat these as permanent constants the way
+# GC=F/SI=F duty is.
+#
+# Calibrated 2026-07-21 against broker LTP: NG=F basis ≈ 1.159
+# (previously NG=F was at 1.0, causing the app to show ₹243.07 vs the
+# broker's actual ₹281.70 — a naked, unadjusted Henry Hub-in-rupees print).
+MCX_DUTY = {'GC=F':1.15,'SI=F':1.15,'CL=F':1.0,'BZ=F':1.0,'NG=F':1.159}
 
 # Actual MCX trading symbols — what you'd type into Kite/Dhan/Upstox's
 # instrument search. Only meaningful for the "Indian MCX" region; the
@@ -455,7 +469,14 @@ def _period_for(interval):
 
 def _convert_inr(df, ticker):
     usdinr = get_usdinr_rate()
-    duty   = MCX_DUTY.get(ticker, 1.0)
+    # A live calibration (set via the "MCX Basis Calibration" sidebar panel)
+    # always wins over the hardcoded MCX_DUTY table — the table is a
+    # best-known snapshot, not a guarantee it hasn't drifted since.
+    duty   = st.session_state.get(f"_duty_override_{ticker}", MCX_DUTY.get(ticker, 1.0))
+    # Stash the last RAW (pre-duty) USD close so the calibration panel can
+    # back-solve the implied duty/basis factor from a broker LTP the user enters.
+    if 'Close' in df.columns and not df.empty:
+        st.session_state[f"_raw_close_{ticker}"] = float(df['Close'].iloc[-1])
     mult   = usdinr * duty * (10/31.1034768)   if ticker=='GC=F' else \
              usdinr * duty * (1000/31.1034768)  if ticker=='SI=F' else \
              usdinr * duty
@@ -1083,6 +1104,39 @@ def main():
         n_sims = st.select_slider("Simulations", options=[500, 1000, 2000, 5000], value=2000) if run_monte_carlo else 2000
 
         st.divider()
+        with st.expander("🎯 MCX Basis Calibration"):
+            st.caption(
+                "Yahoo's global benchmark (Henry Hub / WTI / COMEX) doesn't always "
+                "match MCX's own quoted price — the gap can drift over time. If your "
+                "broker terminal shows a different LTP than this app, enter it here "
+                "to instantly recalibrate the multiplier for this session."
+            )
+            calib_ticker = st.selectbox(
+                "Recalibrate", ["NG=F", "CL=F", "GC=F", "SI=F"], key="calib_ticker",
+                help="Pick the ticker whose price is currently mismatched vs your broker.")
+            calib_broker_ltp = st.number_input(
+                "Broker LTP (₹)", min_value=0.0, value=0.0, step=0.5, key="calib_ltp")
+            if st.button("Apply Calibration", use_container_width=True):
+                if calib_broker_ltp <= 0:
+                    st.warning("Enter a valid broker LTP first.")
+                else:
+                    raw_usd_price = st.session_state.get(f"_raw_close_{calib_ticker}")
+                    if raw_usd_price:
+                        _usdinr_for_calib = get_usdinr_rate()
+                        if calib_ticker == 'GC=F':
+                            _base = _usdinr_for_calib * (10/31.1034768)
+                        elif calib_ticker == 'SI=F':
+                            _base = _usdinr_for_calib * (1000/31.1034768)
+                        else:
+                            _base = _usdinr_for_calib
+                        implied_duty = calib_broker_ltp / (raw_usd_price * _base)
+                        st.session_state[f"_duty_override_{calib_ticker}"] = implied_duty
+                        st.success(f"Calibrated {calib_ticker}: basis factor set to {implied_duty:.4f}")
+                    else:
+                        st.warning(
+                            f"No raw price cached yet for {calib_ticker} — select it as your "
+                            f"active Asset above first (so the app fetches it), then recalibrate.")
+        st.divider()
         enable_alerts = st.toggle("🔔 Telegram Alerts", value=False)
         if st.button("🚀 Send Test Alert", use_container_width=True):
             _test_name = "Auto (Regime-Adaptive)" if is_auto_mode else strategy.name
@@ -1275,6 +1329,12 @@ def main():
         f"<span class='fresh-pill'>🟢 LIVE · {last_candle_str} · {data_age_min:.0f} min old</span>"
     )
     st.markdown(freshness_pill, unsafe_allow_html=True)
+    if f"_duty_override_{ticker}" in st.session_state:
+        _ov = st.session_state[f"_duty_override_{ticker}"]
+        st.markdown(
+            f"<span class='fresh-pill' style='background:#ede9fe;color:#5b21b6;border-color:#c4b5fd'>"
+            f"🎯 Manual basis calibration active · ×{_ov:.4f}</span>",
+            unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
     mc1,mc2,mc3,mc4 = st.columns(4)
     mc1.metric("💰 Price (INR)",      f"₹{curr['Close']:,.2f}", f"{chg_pct:+.2f}%")
