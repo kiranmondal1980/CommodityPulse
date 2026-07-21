@@ -105,9 +105,24 @@ PARAMS = {
     # ─── Operational ─────────────────────────────────────────
     "state_file":        "last_alerts.json",
     "regime_state_file": "regime_state.json",   # per-ticker Auto Router hysteresis
+    "stale_multiplier":  2.0,   # flag/skip a candle older than 2x its own interval
     "fetch_sleep":  2,
     "max_retries":  3,
     "import_duty":  1.15,   # 15% Indian import duty for Gold/Silver (confirmed current as of 2026)
+
+    # ─── MCX basis calibration (NOT import duty) ─────────────
+    # Natural Gas / Crude Oil don't carry an import duty the way Gold/Silver
+    # do — instead there's a pricing BASIS GAP between Yahoo's global
+    # benchmark (Henry Hub for NG=F, WTI for CL=F) and MCX's own quoted
+    # price, driven by import-parity / local delivery economics. This gap
+    # drifts over time and must be periodically re-checked against a broker
+    # LTP — treat these as living calibration values, not fixed constants.
+    #
+    # Calibrated 2026-07-21 against broker LTP: NG basis ≈ 1.159
+    # (previously implicitly 1.0, causing the bot's alerted Entry/SL/TP
+    # levels for Natural Gas to be ~16% below the real MCX price).
+    "ng_basis":     1.159,
+    "crude_basis":  1.0,
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -151,14 +166,25 @@ def get_usdinr() -> float:
     except Exception:
         return 83.80
 
-def to_inr(usd_val: float, asset_type: str) -> float:
-    """Convert USD global price → calibrated MCX INR price."""
+def to_inr(usd_val: float, asset_type: str, ticker: str = "") -> float:
+    """Convert USD global price → calibrated MCX INR price.
+
+    NOTE: for "comm" assets (NG=F, CL=F) the ticker is needed to pick the
+    right basis factor — asset_type alone can't distinguish Natural Gas from
+    Crude, and applying the wrong one (or none at all, as before) produces a
+    systematic mispricing. This was the root cause of the bot showing
+    Entry/SL/TP levels for Natural Gas ~16% below actual MCX prices.
+    """
     rate = get_usdinr()
     duty = PARAMS["import_duty"]
     if asset_type == "gold":
         return (usd_val / 31.1034768) * 10 * rate * duty
     elif asset_type == "silver":
         return (usd_val / 31.1034768) * 1000 * rate * duty
+    elif ticker == "NG=F":
+        return usd_val * rate * PARAMS["ng_basis"]
+    elif ticker in ("CL=F", "BZ=F"):
+        return usd_val * rate * PARAMS["crude_basis"]
     else:
         return usd_val * rate
 
@@ -209,6 +235,23 @@ def _download(ticker: str, period: str, interval: str) -> pd.DataFrame | None:
         except Exception as e:
             log.warning(f"Fetch attempt {attempt+1} failed for {ticker}: {e}")
     return None
+
+# ── DATA FRESHNESS ──────────────────────────────────────────────
+# Commodity feeds (Natural Gas especially) can lag or gap on Yahoo's intraday
+# granularity. Firing a Telegram alert off a stale candle means the Entry/SL/
+# TP levels in the message can be 10-15%+ off the real live MCX price by the
+# time the trader acts on it. Skip the scan for that asset instead.
+INTERVAL_MINUTES = {"1m":1, "2m":2, "5m":5, "15m":15, "30m":30, "60m":60,
+                     "90m":90, "1h":60, "1d":1440, "1wk":10080}
+
+def _is_data_stale(df: pd.DataFrame, interval: str) -> tuple[bool, float]:
+    last_ts = df.index[-1]
+    if last_ts.tzinfo is None:
+        last_ts = last_ts.tz_localize("UTC")
+    now = datetime.now(pytz.UTC)
+    age_min = (now - last_ts).total_seconds() / 60.0
+    expected = INTERVAL_MINUTES.get(interval, 15)
+    return age_min > expected * PARAMS["stale_multiplier"], age_min
 
 # ──────────────────────────────────────────────────────────────
 # ═══════════════  STRATEGY ENGINE (OOP)  ════════════════════
@@ -479,16 +522,16 @@ def get_htf_bias(ticker: str) -> int:
 # ──────────────────────────────────────────────────────────────
 # RISK & DUAL-TP CALCULATION
 # ──────────────────────────────────────────────────────────────
-def calculate_trade_levels(sig: dict, info: dict) -> dict:
+def calculate_trade_levels(sig: dict, info: dict, ticker: str) -> dict:
     """Return entry, SL, TP1, TP2 all in INR."""
     p = PARAMS
     asset_type = info["type"]
 
-    entry_inr = to_inr(sig["price"], asset_type)
+    entry_inr = to_inr(sig["price"], asset_type, ticker)
     sl_dist_usd = p["sl_atr_mult"] * sig["atr"]
     sl_usd = (sig["price"] - sl_dist_usd if sig["signal"] == "BULLISH"
               else sig["price"] + sl_dist_usd)
-    sl_inr  = to_inr(sl_usd, asset_type)
+    sl_inr  = to_inr(sl_usd, asset_type, ticker)
 
     risk_inr = abs(entry_inr - sl_inr)
     if sig["signal"] == "BULLISH":
@@ -630,6 +673,15 @@ def main() -> None:
             log.warning(f"  No data for {ticker} — skipping.")
             continue
 
+        # 2b. Freshness guard — never alert off a stale candle
+        stale, age_min = _is_data_stale(df_raw, PARAMS["base_interval"])
+        if stale:
+            log.warning(
+                f"  🔴 STALE DATA for {ticker} — last candle is {age_min:.0f} min old "
+                f"(expected ~{INTERVAL_MINUTES.get(PARAMS['base_interval'], 15)} min). Skipping this scan."
+            )
+            continue
+
         # 3. Resolve strategy for THIS ticker
         regime_reason = None
         if is_auto:
@@ -679,7 +731,7 @@ def main() -> None:
             continue
 
         # 7. Calculate trade levels in INR
-        levels = calculate_trade_levels(sig, info)
+        levels = calculate_trade_levels(sig, info, ticker)
         log.info(
             f"  Entry ₹{levels['entry_inr']:,.2f} | "
             f"SL ₹{levels['sl_inr']:,.2f} | "
